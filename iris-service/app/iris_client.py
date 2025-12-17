@@ -1,7 +1,6 @@
 from iris.credentials import RsaCredential
 from iris.api import IrisHebeApi
 
-from .config import TOKEN, PIN, TENANT
 from datetime import date
 from iris._exceptions import WrongTokenException, UsedTokenException
 import asyncio
@@ -128,7 +127,7 @@ class IrisClient:
         # jawne zamknięcie zasobów
         await self._close_api_if_needed()
 
-    async def register(self):
+    async def register(self, pin: str, token: str, tenant: str):
         # jeśli credential ma już ustawiony rest_url, uznajemy, że jest zarejestrowany
         if self.credential is not None and getattr(self.credential, "rest_url", None):
             return self.credential.rest_url
@@ -136,7 +135,7 @@ class IrisClient:
         api = self._ensure_api()
         try:
             # Rejestracja token+PIN
-            await api.register_by_token(security_token=TOKEN, pin=PIN, tenant=TENANT)
+            await api.register_by_token(security_token=token, pin=pin, tenant=tenant)
             # po udanej rejestracji zapisz credential do pliku zgodnie z dokumentacją
             try:
                 if hasattr(self.credential, "model_dump_json"):
