@@ -319,7 +319,7 @@ class IrisClient:
         exams = await api.get_exams(
             rest_url=account.unit.rest_url,
             pupil_id=account.pupil.id,
-            date_from=date(2020, 9, 1),
-            date_to=date(2020, 9, 7)
+            date_from=date(2025, 12, 8),
+            date_to=date(2025, 12, 17)
         )      
         return exams
