@@ -117,11 +117,11 @@ async def health():
 
 @app.get("/ready")
 async def ready():
-    """Sprawdzenie, czy klient Iris został zarejestrowany."""
+    """Sprawdza, czy klient Iris został zarejestrowany przez użytkownika."""
     if app.state.registered:
         return {"status": "ready"}
     else:
-        raise HTTPException(status_code=503, detail="Iris client not ready")
+        raise HTTPException(status_code=503, detail="Iris client not registered yet")
 
 # ==============================
 # ENDPOINTY API
