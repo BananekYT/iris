@@ -1,3 +1,6 @@
 credential.json
 app/credential.json
 **/credential.json
+credentials/
+iris-service/app/credential.json
+iris-service/credentials/

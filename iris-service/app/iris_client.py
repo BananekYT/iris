@@ -1,5 +1,6 @@
 from iris.credentials import RsaCredential
 from iris.api import IrisHebeApi
+from .secure_credential import save_credential, load_credential
 
 from datetime import date
 from iris._exceptions import WrongTokenException, UsedTokenException
@@ -8,7 +9,15 @@ import aiohttp
 import inspect
 from pathlib import Path
 
-CREDENTIAL_FILE = Path(__file__).parent / "credential.json"
+# ROOT_DIR = katalog nadrzędny dla katalogu "iris-services"
+ROOT_DIR = Path(__file__).resolve().parents[2]  # jeśli secure_credential.py jest w app/
+
+# katalog credentials w root
+CREDENTIALS_DIR = ROOT_DIR / "credentials"
+CREDENTIALS_DIR.mkdir(exist_ok=True, parents=True)
+
+def credential_file_for(user_id: str) -> Path:
+    return CREDENTIALS_DIR / f"{user_id}.json"
 
 class IrisClient:
     def __init__(self):
@@ -18,21 +27,13 @@ class IrisClient:
         self.credential = None
         self.api = None
         self.current_account = None  # przechowuje ostatnio używane konto
-
-        # Spróbuj wczytać zapisany credential zgodnie z dokumentacją
-        if CREDENTIAL_FILE.exists():
-            try:
-                data = CREDENTIAL_FILE.read_text(encoding="utf-8")
-                # użyj model_validate_json jeśli dostępne
-                if hasattr(RsaCredential, "model_validate_json"):
-                    self.credential = RsaCredential.model_validate_json(data)
-                else:
-                    # fallback na pydantic v1 metoda
-                    self.credential = RsaCredential.parse_raw(data)
-                print("Loaded existing credential from", CREDENTIAL_FILE)
-            except Exception as e:
-                print("Warning: failed to load credential file:", repr(e))
-                self.credential = None
+        # ==============================
+        # ŚCIEŻKI CREDENTIALI
+        # ==============================
+        #self.project_root = project_root
+        #self.credentials_file = self.project_root / "credentials" / "credential.json"
+        #self.credentials_file.parent.mkdir(parents=True, exist_ok=True)
+        # ==============================
 
     def _ensure_api(self):
         # utwórz credential i api dopiero przy pierwszym użyciu
@@ -127,59 +128,24 @@ class IrisClient:
         # jawne zamknięcie zasobów
         await self._close_api_if_needed()
 
-    async def register(self, pin: str, token: str, tenant: str):
-        # jeśli credential ma już ustawiony rest_url, uznajemy, że jest zarejestrowany
-        if self.credential is not None and getattr(self.credential, "rest_url", None):
-            return self.credential.rest_url
-
+    async def register(self, pin: str, token: str, tenant: str, user_id: str):
         api = self._ensure_api()
         try:
-            # Rejestracja token+PIN
             await api.register_by_token(security_token=token, pin=pin, tenant=tenant)
-            # po udanej rejestracji zapisz credential do pliku zgodnie z dokumentacją
-            try:
-                if hasattr(self.credential, "model_dump_json"):
-                    serialized = self.credential.model_dump_json()
-                else:
-                    # fallback dla starszych wersji pydantic
-                    serialized = self.credential.json()
-                CREDENTIAL_FILE.write_text(serialized, encoding="utf-8")
-                print("Saved credential to", CREDENTIAL_FILE)
-            except Exception as e:
-                print("Warning: failed to save credential:", repr(e))
-        except WrongTokenException as e:
-            # Przyjazny komunikat dla nieprawidłowego tokena
+            serialized = self.credential.model_dump_json() if hasattr(self.credential, "model_dump_json") else self.credential.json()
+            save_credential(user_id, serialized)
+        except (WrongTokenException, UsedTokenException) as e:
             await self._close_api_if_needed()
-            raise RuntimeError("Nieprawidłowy token rejestracyjny (TOKEN). Sprawdź wartość w konfiguracji.") from e
-        except UsedTokenException as e:
-            # Token już był użyty — możliwe, że masz zapisane poświadczenia w credential.json
-            await self._close_api_if_needed()
-            msg = (
-                "Token już był użyty. Jeśli wcześniej rejestrowałeś aplikację, sprawdź plik 'app/credential.json'\n"
-                "i użyj zapisanych poświadczeń. Jeśli to nowa instalacja, poproś o nowy token od szkoły."
-            )
-            raise RuntimeError(msg) from e
+            raise RuntimeError(f"Rejestracja nie powiodła się: {str(e)}") from e
         except Exception as e:
-            # Spróbuj alternatywnego formatu tokenu przed ostatecznym błędem
-            try:
-                alt_token = TOKEN.upper()
-                if alt_token != TOKEN:
-                    await api.register_by_token(security_token=alt_token, pin=PIN, tenant=TENANT)
-                    try:
-                        if hasattr(self.credential, "model_dump_json"):
-                            serialized = self.credential.model_dump_json()
-                        else:
-                            serialized = self.credential.json()
-                        CREDENTIAL_FILE.write_text(serialized, encoding="utf-8")
-                        print("Saved credential to", CREDENTIAL_FILE)
-                    except Exception:
-                        pass
-                    return
-            except Exception:
-                pass
-            # przy błędzie zamknij sesję i credential, żeby nie zostawiać "Unclosed client session"
             await self._close_api_if_needed()
             raise
+
+    async def load_user_credential(self, user_id: str):
+        serialized = load_credential(user_id)
+        if serialized:
+            self.credential = RsaCredential.model_validate_json(serialized)
+            self.api = IrisHebeApi(self.credential)
 
     async def get_accounts(self):
         api = self._ensure_api()
