@@ -63,7 +63,11 @@ TOKEN_PREFIXES = {
 
 
 def get_base_url_by_token(token: str):
-    base_url = TOKEN_PREFIXES.get(token)
+    # Token zwykle zawiera prefix identyfikujący dostawcę — używamy pierwszych 3 znaków
+    if not token:
+        raise WrongTokenException("Brak tokena")
+    prefix = token[:3]
+    base_url = TOKEN_PREFIXES.get(prefix)
     if not base_url:
-        raise WrongTokenException()
+        raise WrongTokenException(f"Nieznany prefix tokena: '{prefix}'")
     return base_url

@@ -3,6 +3,7 @@ from iris.api import IrisHebeApi
 
 from .config import TOKEN, PIN, TENANT
 from datetime import date
+from iris._exceptions import WrongTokenException, UsedTokenException
 import asyncio
 import aiohttp
 import inspect
@@ -51,17 +52,49 @@ class IrisClient:
                 if asyncio.iscoroutine(res):
                     await res
         # dodatkowo przeszukaj atrybuty api/credential i zamknij znalezione ClientSession
-        def _collect_sessions(obj):
+        def _collect_sessions(obj, _visited=None):
             sessions = []
             if obj is None:
                 return sessions
+            if _visited is None:
+                _visited = set()
+            try:
+                obj_id = id(obj)
+            except Exception:
+                return sessions
+            if obj_id in _visited:
+                return sessions
+            _visited.add(obj_id)
+
+            # direct match
+            if isinstance(obj, aiohttp.ClientSession):
+                sessions.append(obj)
+                return sessions
+
+            # iterate common collections
+            if isinstance(obj, (list, tuple, set)):
+                for item in obj:
+                    sessions.extend(_collect_sessions(item, _visited))
+                return sessions
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    sessions.extend(_collect_sessions(k, _visited))
+                    sessions.extend(_collect_sessions(v, _visited))
+                return sessions
+
+            # inspect attributes of arbitrary objects
             for name in dir(obj):
+                if name.startswith("__"):
+                    continue
                 try:
                     attr = getattr(obj, name)
                 except Exception:
                     continue
-                if isinstance(attr, aiohttp.ClientSession):
-                    sessions.append(attr)
+                # skip callables and modules to avoid executing code
+                if inspect.isroutine(attr) or inspect.ismodule(attr):
+                    continue
+                sessions.extend(_collect_sessions(attr, _visited))
+
             return sessions
 
         # zamknij sesje znalezione w api i credential
@@ -96,6 +129,10 @@ class IrisClient:
         await self._close_api_if_needed()
 
     async def register(self):
+        # jeśli credential ma już ustawiony rest_url, uznajemy, że jest zarejestrowany
+        if self.credential is not None and getattr(self.credential, "rest_url", None):
+            return self.credential.rest_url
+
         api = self._ensure_api()
         try:
             # Rejestracja token+PIN
@@ -111,6 +148,18 @@ class IrisClient:
                 print("Saved credential to", CREDENTIAL_FILE)
             except Exception as e:
                 print("Warning: failed to save credential:", repr(e))
+        except WrongTokenException as e:
+            # Przyjazny komunikat dla nieprawidłowego tokena
+            await self._close_api_if_needed()
+            raise RuntimeError("Nieprawidłowy token rejestracyjny (TOKEN). Sprawdź wartość w konfiguracji.") from e
+        except UsedTokenException as e:
+            # Token już był użyty — możliwe, że masz zapisane poświadczenia w credential.json
+            await self._close_api_if_needed()
+            msg = (
+                "Token już był użyty. Jeśli wcześniej rejestrowałeś aplikację, sprawdź plik 'app/credential.json'\n"
+                "i użyj zapisanych poświadczeń. Jeśli to nowa instalacja, poproś o nowy token od szkoły."
+            )
+            raise RuntimeError(msg) from e
         except Exception as e:
             # Spróbuj alternatywnego formatu tokenu przed ostatecznym błędem
             try:
@@ -140,16 +189,103 @@ class IrisClient:
     async def login(self, login: str, password: str, symbol: str):
         await self.register()
         api = self._ensure_api()
-        account = await api.login_by_login_password(
+        envelope = await api.login_by_login_password(
             login=login,
             password=password,
-            symbol=symbol
+            symbol=symbol,
         )
-        # zapamiętujemy konto dla późniejszych wywołań
-        self.current_account = account
+
+        # pomocnicza funkcja: rekurencyjnie szuka kluczy zawierających 'session' lub 'token'
+        def _find_token(obj, _visited=None):
+            if _visited is None:
+                _visited = set()
+            try:
+                oid = id(obj)
+            except Exception:
+                return None
+            if oid in _visited:
+                return None
+            _visited.add(oid)
+
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    if isinstance(k, str) and ("session" in k.lower() or "token" in k.lower()):
+                        if isinstance(v, str) and len(v) > 5:
+                            return v
+                    res = _find_token(v, _visited)
+                    if res:
+                        return res
+            elif isinstance(obj, (list, tuple)):
+                for it in obj:
+                    res = _find_token(it, _visited)
+                    if res:
+                        return res
+            return None
+
+        # spróbuj znaleźć token w surowej odpowiedzi
+        session_token = _find_token(envelope)
+
+        # spróbuj wyekstrahować obiekt konta (dict zawierający pola typowe dla Account)
+        def _find_account_dict(obj, _visited=None):
+            if _visited is None:
+                _visited = set()
+            try:
+                oid = id(obj)
+            except Exception:
+                return None
+            if oid in _visited:
+                return None
+            _visited.add(oid)
+
+            if isinstance(obj, dict):
+                # heurystyka: obecność klucza 'TopLevelPartition' lub 'Unit' sugeruje obiekt Account
+                if any(k in obj for k in ("TopLevelPartition", "Unit", "Pupil")):
+                    return obj
+                for v in obj.values():
+                    res = _find_account_dict(v, _visited)
+                    if res:
+                        return res
+            elif isinstance(obj, (list, tuple)):
+                for it in obj:
+                    res = _find_account_dict(it, _visited)
+                    if res:
+                        return res
+            return None
+
+        account_data = _find_account_dict(envelope)
+        account_obj = None
+        try:
+            if account_data is not None:
+                from iris.models import Account
+
+                account_obj = Account.model_validate(account_data)
+                # dołącz token jeśli znaleziono
+                if session_token:
+                    setattr(account_obj, "session_token", session_token)
+        except Exception:
+            account_obj = None
+
+        # jeśli nie znaleziono account_obj, spróbuj gdy envelope jest listą z jednym elementem
+        if account_obj is None and isinstance(envelope, list) and envelope:
+            try:
+                from iris.models import Account
+
+                possible = envelope[0]
+                if isinstance(possible, dict):
+                    account_obj = Account.model_validate(possible)
+                    if session_token:
+                        setattr(account_obj, "session_token", session_token)
+            except Exception:
+                account_obj = None
+
+        # zapamiętujemy konto dla późniejszych wywołań (jeśli znaleziono)
+        if account_obj is not None:
+            self.current_account = account_obj
+
         return {
-            "token": account.session_token,
-            "student": account.student_info
+            "token": session_token,
+            "student": account_obj.model_dump() if account_obj is not None else None,
+            "raw": envelope,
         }
     
     async def _ensure_account_for_token(self, session_token: str):
