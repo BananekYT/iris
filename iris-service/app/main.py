@@ -1,9 +1,12 @@
 import os
 import logging
 import traceback
+import json
 from fastapi import FastAPI, HTTPException
 from app.iris_client import IrisClient
 from iris._exceptions import WrongTokenException
+from iris.credentials import RsaCredential
+from iris.api import IrisHebeApi
 
 # ==============================
 # LOGOWANIE
@@ -18,32 +21,81 @@ logger = logging.getLogger(__name__)
 # ==============================
 app = FastAPI()
 client = IrisClient()
+app.state.registered = False  # flaga gotowości
 
 # ==============================
-# TOKEN Z ENV
+# FUNKCJE POMOCNICZE
 # ==============================
-TOKEN = os.getenv("IRIS_TOKEN")
-if not TOKEN:
-    logger.warning("Brak IRIS_TOKEN w zmiennych środowiskowych. Sprawdź Railway Environments.")
+def load_or_create_credential() -> RsaCredential:
+    """Wczytaj zapisany credential lub utwórz nowy."""
+    if os.path.exists(CREDENTIAL_FILE):
+        with open(CREDENTIAL_FILE, "r") as f:
+            serialized = f.read()
+        credential = RsaCredential.model_validate_json(serialized)
+        logger.info("Credential loaded from file")
+    else:
+        credential = RsaCredential.create_new("Android", "SM-A525F")
+        serialized = credential.model_dump_json()
+        with open(CREDENTIAL_FILE, "w") as f:
+            f.write(serialized)
+        logger.info("New credential created and saved to file")
+    return credential
 
 # ==============================
 # STARTUP / SHUTDOWN
 # ==============================
 @app.on_event("startup")
 async def startup_event():
-    if getattr(app.state, "registered", False):
+    if app.state.registered:
         return
     try:
+        credential = load_or_create_credential()
+        api = IrisHebeApi(credential)
+        await api.register_by_token(security_token=TOKEN, pin=PIN, tenant=TENANT)
+        client.credential = credential
         await client.register()
         app.state.registered = True
         logger.info("Startup: iris client registered successfully")
     except WrongTokenException as e:
-        logger.error("Startup: nieprawidłowy token rejestracyjny (TOKEN). Sprawdź ENV IRIS_TOKEN.")
+        logger.error("Startup: nieprawidłowy token rejestracyjny lub PIN. Sprawdź ENV.")
         logger.debug("Szczegóły wyjątku: %s", repr(e))
         traceback.print_exc()
     except Exception as e:
         logger.exception("Startup: iris client registration failed")
         traceback.print_exc()
+
+@app.post("/register")
+async def register_user(body: dict):
+    """
+    Rejestruje credential i klienta Iris dla użytkownika.
+    Oczekiwane pola JSON:
+    {
+        "pin": "xxxx",
+        "token": "xxxx",
+        "tenant": "xxxx"
+    }
+    """
+    pin = body.get("pin")
+    token = body.get("token")
+    tenant = body.get("tenant")
+
+    if not all([pin, token, tenant]):
+        raise HTTPException(status_code=400, detail="Brakuje pola pin/token/tenant")
+
+    try:
+        # Tworzymy nowy credential
+        credential = RsaCredential.create_new("Android", "SM-A525F")
+        api = IrisHebeApi(credential)
+        await api.register_by_token(security_token=token, pin=pin, tenant=tenant)
+        # Rejestrujemy w kliencie
+        client.credential = credential
+        await client.register()
+        app.state.registered = True
+        return {"status": "registered"}
+    except WrongTokenException:
+        raise HTTPException(status_code=401, detail="Nieprawidłowy token lub PIN")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.on_event("shutdown")
@@ -56,14 +108,23 @@ async def shutdown_event():
         traceback.print_exc()
 
 # ==============================
-# HEALTHCHECK
+# HEALTHCHECK / READY
 # ==============================
 @app.get("/health")
 async def health():
+    """Lekkie sprawdzenie, czy serwis działa."""
     return {"status": "ok"}
 
+@app.get("/ready")
+async def ready():
+    """Sprawdzenie, czy klient Iris został zarejestrowany."""
+    if app.state.registered:
+        return {"status": "ready"}
+    else:
+        raise HTTPException(status_code=503, detail="Iris client not ready")
+
 # ==============================
-# ENDPOINTY
+# ENDPOINTY API
 # ==============================
 @app.get("/")
 async def root():
@@ -81,22 +142,22 @@ async def get_accounts():
                 parts = [
                     getattr(pupil, "first_name", ""),
                     getattr(pupil, "second_name", ""),
-                    getattr(pupil, "surname", "")]
+                    getattr(pupil, "surname", "")
+                ]
                 full_name = " ".join([p for p in parts if p])
             unit_name = getattr(getattr(acc, "unit", None), "name", None)
             result.append({
                 "full_name": full_name,
                 "unit_name": unit_name,
-                "session_token": None,  # token sesji przez /login
+                "session_token": None
             })
         return result
     except WrongTokenException:
-        raise HTTPException(status_code=401, detail="Nieprawidłowy token rejestracyjny. Sprawdź konfigurację IRIS_TOKEN.")
+        raise HTTPException(status_code=401, detail="Nieprawidłowy token sesji")
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.get("/accounts/raw")
 async def get_accounts_raw():
@@ -105,7 +166,6 @@ async def get_accounts_raw():
         return [acc.model_dump() for acc in accounts]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.get("/grades")
 async def get_grades(token: str | None = None):
@@ -125,7 +185,6 @@ async def get_grades(token: str | None = None):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @app.get("/exams")
 async def get_exams(token: str | None = None):
     try:
@@ -144,14 +203,8 @@ async def get_exams(token: str | None = None):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @app.post("/login")
 async def login(body: dict):
-    """Zaloguj się danymi konta, zwróć `session_token`.
-
-    Oczekiwane pola JSON: {"login": "username", "password": "pwd", "symbol": "schoolSymbol"}
-    """
-
     login_val = body.get("login")
     password = body.get("password")
     symbol = body.get("symbol")
@@ -160,6 +213,21 @@ async def login(body: dict):
     try:
         resp = await client.login(login_val, password, symbol)
         return resp
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except WrongTokenException:
+        raise HTTPException(status_code=401, detail="Nieprawidłowy token sesji")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+@app.post("/switch-account")
+async def switch_account(body: dict):
+    symbol = body.get("symbol")
+    if not symbol:
+        raise HTTPException(status_code=400, detail="Brakuje symbol w ciele żądania")
+    try:
+        await client.switch_account(symbol)
+        return {"status": "switched", "symbol": symbol}
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except WrongTokenException:
