@@ -4,6 +4,7 @@ from .secure_credential import save_credential, load_credential
 
 from datetime import date
 from iris._exceptions import WrongTokenException, UsedTokenException
+from .errors import CredentialNotFoundError
 import asyncio
 import aiohttp
 import inspect
@@ -41,7 +42,7 @@ class IrisClient:
         """
         if self.api is None:
             if self.credential is None:
-                raise RuntimeError(
+                raise CredentialNotFoundError(
                     "Brak credential. Najpierw wywołaj register() "
                     "lub load_user_credential(user_id)."
                 )
@@ -143,6 +144,7 @@ class IrisClient:
         serialized = load_credential(user_id)
         if not serialized:
             raise RuntimeError("Brak zapisanych credentials")
+        
 
         self.credential = RsaCredential.model_validate_json(serialized)
         self.api = IrisHebeApi(self.credential)
@@ -194,4 +196,20 @@ class IrisClient:
             pupil_id=acc.pupil.id,
             date_from=date(2025, 12, 8),
             date_to=date(2025, 12, 17),
+        )
+    
+    # =====================================
+    # SZCZĘŚLIWY NUMEREK (LUCKY NUMBER)
+    # =====================================
+    async def get_lucky_number(self):
+        if self.current_account is None:
+            await self.get_accounts()
+
+        api = self._ensure_api()
+        acc = self.current_account
+
+        return await api.get_lucky_number(
+            rest_url=acc.unit.rest_url,
+            pupil_id=acc.pupil.id,
+            constituent_unit_id=acc.constituent_unit.id
         )
