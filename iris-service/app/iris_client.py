@@ -2,7 +2,7 @@ from iris.credentials import RsaCredential
 from iris.api import IrisHebeApi
 from .secure_credential import save_credential, load_credential
 
-from datetime import date
+from datetime import date, timedelta
 from iris._exceptions import WrongTokenException, UsedTokenException
 from .errors import CredentialNotFoundError
 import asyncio
@@ -211,5 +211,80 @@ class IrisClient:
         return await api.get_lucky_number(
             rest_url=acc.unit.rest_url,
             pupil_id=acc.pupil.id,
-            constituent_unit_id=acc.constituent_unit.id
+            constituent_unit_id=acc.constituent_unit.id,
+        )
+
+    
+    # =====================================
+    # FREKWENCJA
+    # =====================================
+    async def get_attendance(self):
+        if self.current_account is None:
+            await self.get_accounts()
+
+        api = self._ensure_api()
+        acc = self.current_account
+
+        return await api.get_attendance(
+            rest_url=acc.unit.rest_url,
+            pupil_id=acc.pupil.id,
+            period_id=acc.periods[-1].id,
+        )
+
+    # =====================================
+    # PLAN LEKCJI
+    # =====================================
+    async def get_timetable(
+        self,
+        date_from: date | None = None,
+        date_to: date | None = None,
+    ):
+        if self.current_account is None:
+            await self.get_accounts()
+
+        api = self._ensure_api()
+        acc = self.current_account
+
+        if date_from is None:
+            date_from = date.today()
+
+        if date_to is None:
+            date_to = date_from + timedelta(days=7)
+
+        return await api.get_schedule(
+            rest_url=acc.unit.rest_url,
+            pupil_id=acc.pupil.id,
+            date_from=date_from,
+            date_to=date_to,
+        )
+
+    # ==============================
+    # NAUCZYCIELE
+    # ==============================
+    async def get_teachers(self):
+        if self.current_account is None:
+            await self.get_accounts()
+
+        api = self._ensure_api()
+        acc = self.current_account
+
+        return await api.get_teachers(
+            rest_url=acc.unit.rest_url,
+            pupil_id=acc.pupil.id,
+            period_id=acc.periods[-1].id,
+        )
+    
+    # ==============================
+    # SZKOŁA - INFORMACJE
+    # ==============================
+    async def get_school_info(self):
+        if self.current_account is None:
+            await self.get_accounts()
+
+        api = self._ensure_api()
+        acc = self.current_account
+
+        return await api.get_school_info(
+            rest_url=acc.unit.rest_url,
+            pupil_id=acc.pupil.id,
         )

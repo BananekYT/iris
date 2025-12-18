@@ -198,7 +198,14 @@ async def get_accounts_raw(user_id: str):
 # GRADES
 # ==============================
 @app.get("/grades")
-async def get_grades():
+async def get_grades(user_id: str):
+    try:
+        await client.load_user_credential(user_id)
+    except RuntimeError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Nie udało się załadować credentials dla {user_id}. Najpierw wywołaj /register"
+        )
     try:
         grades = await client.get_grades()
         return [g.model_dump() for g in grades]
@@ -209,7 +216,14 @@ async def get_grades():
 # EXAMS
 # ==============================
 @app.get("/exams")
-async def get_exams():
+async def get_exams(user_id: str):
+    try:
+        await client.load_user_credential(user_id)
+    except RuntimeError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Nie udało się załadować credentials dla {user_id}. Najpierw wywołaj /register"
+        )
     try:
         exams = await client.get_exams()
         return [e.model_dump() for e in exams]
@@ -220,9 +234,92 @@ async def get_exams():
 # SZCZĘŚLIWY NUMEREK
 # =============================
 @app.get("/lucky-number")
-async def lucky_number():
+async def lucky_number(user_id: str):
+    try:
+        await client.load_user_credential(user_id)
+    except RuntimeError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Nie udało się załadować credentials dla {user_id}. Najpierw wywołaj /register"
+        )
     try:
         lucky = await client.get_lucky_number()
         return [g.model_dump() for g in lucky]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    
+# ==============================
+# FREKWENCJA
+# =============================
+@app.get("/attendance")
+async def get_attendance(user_id: str):
+    try:
+        await client.load_user_credential(user_id)
+    except RuntimeError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Nie udało się załadować credentials dla {user_id}. Najpierw wywołaj /register"
+        )
+    try:
+        attendance = await client.get_attendance()
+        return [a.model_dump() for a in attendance]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+# =============================
+# PLAN LEKCJI
+# ============================
+@app.get("/timetable")
+async def get_timetable(user_id: str):
+    try:
+        await client.load_user_credential(user_id)
+    except RuntimeError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Nie udało się załadować credentials dla {user_id}. Najpierw wywołaj /register"
+        )
+    try:
+        timetable = await client.get_timetable()
+        return [t.model_dump() for t in timetable]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+# ==============================
+# NAUCZYCIELE
+# =============================
+@app.get("/teachers")
+async def get_teachers(user_id: str):
+    try:
+        await client.load_user_credential(user_id)
+    except RuntimeError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Nie udało się załadować credentials dla {user_id}. Najpierw wywołaj /register"
+        )
+    try:
+        teachers = await client.get_teachers()
+        return [t.model_dump() for t in teachers]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+# ===============================
+# SZKOŁA - INFORMACJE
+# =============================
+@app.get("/school-info")
+async def get_school_info(user_id: str):
+    try:
+        await client.load_user_credential(user_id)
+    except RuntimeError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Nie udało się załadować credentials dla {user_id}. Najpierw wywołaj /register"
+        )
+    try:
+        school_info = await client.get_school_info()
+        return [s.model_dump() for s in school_info]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ==============================
+# UWAGI
+# =============================
