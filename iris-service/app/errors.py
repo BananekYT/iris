@@ -27,8 +27,8 @@ class CredentialNotFoundError(AppError):
 
 
 class WrongTokenError(AppError):
-    """Nieprawidłowy token sesji"""
+    """Nieprawidłowy token"""
     code = "WRONG_TOKEN"
     status_code = 401
     def __init__(self, message: str | None = None):
-        super().__init__(message or "Nieprawidłowy token sesji")
+        super().__init__(message or "Nieprawidłowy token")
