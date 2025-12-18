@@ -23,7 +23,10 @@ class CredentialNotFoundError(AppError):
     code = "CREDENTIAL_NOT_FOUND"
     status_code = 404
     def __init__(self, message: str | None = None):
-        super().__init__(message or "Nie znaleziono credentials dla podanego ID")
+        super().__init__(message or
+        "Brak credential. Najpierw wywołaj register() "
+        "lub load_user_credential(user_id)"
+        )
 
 
 class WrongTokenError(AppError):
