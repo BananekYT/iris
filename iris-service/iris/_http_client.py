@@ -3,7 +3,6 @@ from datetime import datetime, date
 from uuid import uuid4
 
 from aiohttp import ClientSession
-import logging
 
 from iris._exceptions import (
     CertificateNotFoundException,
@@ -116,8 +115,6 @@ class HttpClient:
         body = self._build_body(payload) if payload else None
         headers = self._build_headers(url, body, pupil_id)
 
-        logger = logging.getLogger("iris._http_client")
-        logger.debug("HTTP request %s %s", method, url)
         try:
             response = await self._client.request(
                 method=method,
@@ -127,26 +124,18 @@ class HttpClient:
                 headers=headers
             )
         except Exception as exception:
-            logger.exception("HTTP request failed: %s %s", method, url)
             raise FailedRequestException(exception)
 
-        text = await response.text()
         if response.status != 200:
-            logger.debug("HTTP %s %s -> %s", method, url, response.status)
-            logger.debug("Response body: %s", text)
             raise HttpUnsuccessfullStatusException(
-                f"{response.status}: {text}"
+                f"{response.status}: {await response.text()}"
             )
 
-        if "!DOCTYPE" in text:
+        if "!DOCTYPE" in await response.text():
             raise ResponseInvalidContentTypeException()
 
         if verify_response:
-            try:
-                response_envelope = EnvelopeResponse.model_validate(await response.json())
-            except Exception as e:
-                logger.debug("Failed to parse envelope JSON from %s: %s", url, e)
-                raise
+            response_envelope = EnvelopeResponse.model_validate(await response.json())
             self._check_envelope_status(
                 response_envelope.status.code, response_envelope.status.message
             )

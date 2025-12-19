@@ -48,7 +48,7 @@ class IrisApi(ABC):
     def __init__(self, credential: ICredential):
         pass
 
-    async def get_accounts(self, pupil_id: int | None = None):
+    async def get_accounts(self, pupil_id: int | None = None) -> list[Account]:
         envelope = await self._http.request(
             method="GET",
             rest_url=self._credential.rest_url,
@@ -58,7 +58,7 @@ class IrisApi(ABC):
         )
         return [Account.model_validate(account) for account in envelope]
 
-    async def make_heartbeat(self, rest_url: str, pupil_id: int | None = None):
+    async def make_heartbeat(self, rest_url: str, pupil_id: int | None = None) -> None:
         await self._http.request(
             method="GET",
             rest_url=rest_url,
@@ -68,7 +68,7 @@ class IrisApi(ABC):
 
     async def get_addressbook(
             self, rest_url: str, box: str, pupil_id: int | None = None
-    ):
+    ) -> list[Address]:
         envelope = await self._http.request(
             method="GET",
             rest_url=rest_url,
@@ -86,7 +86,7 @@ class IrisApi(ABC):
             last_sync_date: datetime = EPOCH_START_DATETIME,
             last_id: int = INT_MIN,
             page_size: int = DEFAULT_PAGE_SIZE,
-    ):
+    ) -> list[Announcement]:
         envelope = await self._http.request(
             method="GET",
             rest_url=rest_url,
@@ -111,7 +111,7 @@ class IrisApi(ABC):
             last_sync_date: datetime = EPOCH_START_DATETIME,
             last_id: int = INT_MIN,
             page_size: int = DEFAULT_PAGE_SIZE,
-    ):
+    ) -> list[Lesson]:
         envelope = await self._http.request(
             method="GET",
             rest_url=rest_url,
@@ -135,7 +135,7 @@ class IrisApi(ABC):
             last_sync_date: datetime = EPOCH_START_DATETIME,
             last_id: int = INT_MIN,
             page_size: int = DEFAULT_PAGE_SIZE,
-    ):
+    ) -> list[Duty]:
         envelope = await self._http.request(
             method="GET",
             rest_url=rest_url,
@@ -159,7 +159,7 @@ class IrisApi(ABC):
             last_sync_date: datetime = EPOCH_START_DATETIME,
             last_id: int = INT_MIN,
             page_size: int = DEFAULT_PAGE_SIZE,
-    ):
+    ) -> list[Exam]:
         envelope = await self._http.request(
             method="GET",
             rest_url=rest_url,
@@ -185,7 +185,7 @@ class IrisApi(ABC):
             last_sync_date: datetime = EPOCH_START_DATETIME,
             last_id: int = INT_MIN,
             page_size: int = DEFAULT_PAGE_SIZE,
-    ):
+    ) -> list[Grade]:
         envelope = await self._http.request(
             method="GET",
             rest_url=rest_url,
@@ -210,7 +210,7 @@ class IrisApi(ABC):
             period_id: int,
             last_id: int = INT_MIN,
             page_size: int = DEFAULT_PAGE_SIZE,
-    ):
+    ) -> list[GradeAverage]:
         envelope = await self._http.request(
             method="GET",
             rest_url=rest_url,
@@ -235,7 +235,7 @@ class IrisApi(ABC):
             period_id: int,
             last_id: int = INT_MIN,
             page_size: int = DEFAULT_PAGE_SIZE,
-    ):
+    ) -> list[GradeSummary]:
         envelope = await self._http.request(
             method="GET",
             rest_url=rest_url,
@@ -260,7 +260,7 @@ class IrisApi(ABC):
             last_sync_date: datetime = EPOCH_START_DATETIME,
             last_id: int = INT_MIN,
             page_size: int = DEFAULT_PAGE_SIZE,
-    ):
+    ) -> list[Homework]:
         envelope = await self._http.request(
             method="GET",
             rest_url=rest_url,
@@ -279,7 +279,7 @@ class IrisApi(ABC):
 
     async def get_kindergarten_hours(
             self, rest_url: str, pupil_id: int, constituent_unit_id: int
-    ):
+    ) -> KindergartenHours:
         envelope = await self._http.request(
             method="GET",
             rest_url=rest_url,
@@ -296,7 +296,7 @@ class IrisApi(ABC):
             last_sync_date: datetime = EPOCH_START_DATETIME,
             last_id: int = INT_MIN,
             page_size: int = DEFAULT_PAGE_SIZE,
-    ):
+    ) -> list[Teacher]:
         envelope = await self._http.request(
             method="GET",
             rest_url=rest_url,
@@ -317,7 +317,7 @@ class IrisApi(ABC):
             pupil_id: int,
             constituent_unit_id: int,
             day: date = date.today(),
-    ):
+    ) -> LuckyNumber:
         envelope = await self._http.request(
             method="GET",
             rest_url=rest_url,
@@ -341,7 +341,7 @@ class IrisApi(ABC):
             last_id: int = INT_MIN,
             page_size: int = DEFAULT_PAGE_SIZE,
             last_sync_date: datetime = EPOCH_START_DATETIME,
-    ):
+    ) -> list[MealMenu]:
         envelope = await self._http.request(
             method="GET",
             rest_url=rest_url,
@@ -367,7 +367,7 @@ class IrisApi(ABC):
             last_sync_date: datetime = EPOCH_START_DATETIME,
             last_id: int = INT_MIN,
             page_size: int = DEFAULT_PAGE_SIZE,
-    ):
+    ) -> list[Meeting]:
         envelope = await self._http.request(
             method="GET",
             rest_url=rest_url,
@@ -390,7 +390,7 @@ class IrisApi(ABC):
             last_id: int = INT_MIN,
             page_size: int = DEFAULT_PAGE_SIZE,
             last_sync_date: datetime = EPOCH_START_DATETIME,
-    ):
+    ) -> list[Note]:
         envelope = await self._http.request(
             method="GET",
             rest_url=rest_url,
@@ -414,7 +414,7 @@ class IrisApi(ABC):
             last_sync_date: datetime = EPOCH_START_DATETIME,
             last_id: int = INT_MIN,
             page_size: int = DEFAULT_PAGE_SIZE,
-    ):
+    ) -> list[Lesson]:
         envelope = await self._http.request(
             method="GET",
             rest_url=rest_url,
@@ -440,7 +440,7 @@ class IrisApi(ABC):
             last_sync_date: datetime = EPOCH_START_DATETIME,
             last_id: int = INT_MIN,
             page_size: int = DEFAULT_PAGE_SIZE
-    ):
+    ) -> list[PresenceExtra]:
         envelope = await self._http.request(
             method="GET",
             rest_url=rest_url,
@@ -463,7 +463,7 @@ class IrisApi(ABC):
             pupil_id: int,
             weak_ref_id: int,
             type_: int
-    ):
+    ) -> PresenceExtraInfo:
         envelope = await self._http.request(
             method="GET",
             rest_url=rest_url,
@@ -479,7 +479,7 @@ class IrisApi(ABC):
 
     async def get_presence_month_stats(
             self, rest_url: str, pupil_id: int, period_id: int
-    ):
+    ) -> list[PresenceMonthStats]:
         envelope = await self._http.request(
             method="GET",
             rest_url=rest_url,
@@ -494,7 +494,7 @@ class IrisApi(ABC):
 
     async def get_presence_subject_stats(
             self, rest_url: str, pupil_id: int, period_id: int
-    ):
+    ) -> list[PresenceSubjectStats]:
         envelope = await self._http.request(
             method="GET",
             rest_url=rest_url,
@@ -515,7 +515,7 @@ class IrisApi(ABC):
             last_id: int = INT_MIN,
             page_size: int = DEFAULT_PAGE_SIZE,
             last_sync_date: datetime = EPOCH_START_DATETIME,
-    ):
+    ) -> list[Message]:
         envelope = await self._http.request(
             method="GET",
             rest_url=rest_url,
@@ -540,7 +540,7 @@ class IrisApi(ABC):
             last_id: int = INT_MIN,
             page_size: int = DEFAULT_PAGE_SIZE,
             last_sync_date: datetime = EPOCH_START_DATETIME,
-    ):
+    ) -> list[Schedule]:
         envelope = await self._http.request(
             method="GET",
             rest_url=rest_url,
@@ -566,7 +566,7 @@ class IrisApi(ABC):
             last_sync_date: datetime = EPOCH_START_DATETIME,
             last_id: int = INT_MIN,
             page_size: int = DEFAULT_PAGE_SIZE,
-    ):
+    ) -> list[ScheduleExtra]:
         envelope = await self._http.request(
             method="GET",
             rest_url=rest_url,
@@ -588,7 +588,7 @@ class IrisApi(ABC):
             rest_url: str,
             pupil_id: int,
             last_sync_date: datetime = EPOCH_START_DATETIME,
-    ):
+    ) -> list[SchoolInfo]:
         envelope = await self._http.request(
             method="GET",
             rest_url=rest_url,
@@ -609,7 +609,7 @@ class IrisApi(ABC):
             last_sync_date: datetime = EPOCH_START_DATETIME,
             last_id: int = INT_MIN,
             page_size: int = DEFAULT_PAGE_SIZE,
-    ):
+    ) -> list[Teacher]:
         envelope = await self._http.request(
             method="GET",
             rest_url=rest_url,
@@ -625,7 +625,7 @@ class IrisApi(ABC):
         )
         return [Teacher.model_validate(teacher) for teacher in envelope]
 
-    async def get_timeslots(self, pupil_id: int | None = None):
+    async def get_timeslots(self, pupil_id: int | None = None) -> list[Timeslot]:
         envelope = await self._http.request(
             method="GET",
             rest_url=self._credential.rest_url,
@@ -637,7 +637,7 @@ class IrisApi(ABC):
 
     async def get_trips(
             self, rest_url: str, pupil_id: int, date_from: date, date_to: date
-    ):
+    ) -> list[Trip]:
         envelope = await self._http.request(
             method="GET",
             rest_url=rest_url,
@@ -655,7 +655,7 @@ class IrisApi(ABC):
             self,
             rest_url: str,
             pupil_id: int,
-    ):
+    ) -> list[UserEvent]:
         envelope = await self._http.request(
             method="GET",
             rest_url=rest_url,
@@ -676,7 +676,7 @@ class IrisApi(ABC):
             last_sync_date: datetime = EPOCH_START_DATETIME,
             last_id: int = INT_MIN,
             page_size: int = DEFAULT_PAGE_SIZE,
-    ):
+    ) -> list[Vacation]:
         envelope = await self._http.request(
             method="GET",
             rest_url=rest_url,
@@ -700,7 +700,7 @@ class IrisApi(ABC):
             message_key: str,
             importance: bool,
             pupil_id: int | None = None
-    ):
+    ) -> None:
         await self._http.request(
             method="POST",
             endpoint="mobile/messages/importance",
@@ -720,7 +720,7 @@ class IrisApi(ABC):
             message_key: str,
             status: int,
             pupil_id: int | None = None
-    ):
+    ) -> None:
         await self._http.request(
             method="POST",
             endpoint="mobile/messages/status",
@@ -737,7 +737,7 @@ class IrisApi(ABC):
             self,
             locale: str,
             pupil_id: int | None = None
-    ):
+    ) -> None:
         await self._http.request(
             method="POST",
             endpoint="mobile/push/locale",
@@ -751,7 +751,7 @@ class IrisApi(ABC):
             self,
             turn_on: bool,
             pupil_id: int | None = None
-    ):
+    ) -> None:
         await self._http.request(
             method="POST",
             endpoint="mobile/push/all",
@@ -765,7 +765,7 @@ class IrisApi(ABC):
             option: str,
             active: bool,
             pupil_id: int | None = None
-    ):
+    ) -> PushSetting:
         envelope = await self._http.request(
             method="POST",
             endpoint="mobile/push",
@@ -783,7 +783,7 @@ class IrisApi(ABC):
             options: dict[str, bool],
             locale: str,
             pupil_id: int | None = None
-    ):
+    ) -> list[PushSetting]:
         envelope_options = []
         for name, active in options.items():
             envelope_options.append({
@@ -806,7 +806,7 @@ class IrisApi(ABC):
     async def delete_credential(
             self,
             pupil_id: int | None = None
-    ):
+    ) -> None:
         await self._http.request(
             method="DELETE",
             endpoint="mobile/register",

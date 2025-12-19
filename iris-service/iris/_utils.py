@@ -13,7 +13,7 @@ def pem_getraw(pem: bytes) -> str:
     return pem.decode("utf-8").replace("\n", "").split("-----")[2]
 
 
-def generate_fingerprint(text: str):
+def generate_fingerprint(text: str) -> str:
     return hashlib.md5(text.encode()).digest().hex()
 
 
@@ -62,12 +62,8 @@ TOKEN_PREFIXES = {
 }
 
 
-def get_base_url_by_token(token: str):
-    # Token zwykle zawiera prefix identyfikujący dostawcę — używamy pierwszych 3 znaków
-    if not token:
-        raise WrongTokenException("Brak tokena")
-    prefix = token[:3]
-    base_url = TOKEN_PREFIXES.get(prefix)
+def get_base_url_by_token(token: str) -> str:
+    base_url = TOKEN_PREFIXES.get(token)
     if not base_url:
-        raise WrongTokenException(f"Nieznany prefix tokena: '{prefix}'")
+        raise WrongTokenException()
     return base_url
