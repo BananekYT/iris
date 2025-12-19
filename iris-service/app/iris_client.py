@@ -165,7 +165,7 @@ class IrisClient:
         return [a.model_dump() for a in accounts]
 
     # =====================================
-    # GRADES
+    # OCENY
     # =====================================
     async def get_grades(self):
         if self.current_account is None:
@@ -181,8 +181,42 @@ class IrisClient:
             period_id=acc.periods[-1].id,
         )
 
+    # =================================
+    # ŚREDNIA OCEN
+    # =================================
+    async def get_grades_averages(self):
+        if self.current_account is None:
+            await self.get_accounts()
+
+        api = self._ensure_api()
+        acc = self.current_account
+
+        return await api.get_grades_averages(
+            rest_url=acc.unit.rest_url,
+            unit_id=acc.unit.id,
+            pupil_id=acc.pupil.id,
+            period_id=acc.periods[-1].id,
+        )
+
+    # ====================================
+    # OCENY KOŃCOWOROCZNE I ŚRÓDROCZNE
+    # ====================================
+    async def get_grades_summary(self):
+        if self.current_account is None:
+            await self.get_accounts()
+
+        api = self._ensure_api()
+        acc = self.current_account
+
+        return await api.get_grades_summary(
+            rest_url=acc.unit.rest_url,
+            unit_id=acc.unit.id,
+            pupil_id=acc.pupil.id,
+            period_id=acc.periods[-1].id,
+        )
+
     # =====================================
-    # EXAMS
+    # SPRAWDZIANY
     # =====================================
     async def get_exams(self):
         if self.current_account is None:
@@ -212,33 +246,156 @@ class IrisClient:
             rest_url=acc.unit.rest_url,
             pupil_id=acc.pupil.id,
             constituent_unit_id=acc.constituent_unit.id,
+            day = date.today(),
         )
-
     
     # =====================================
-    # FREKWENCJA
+    # PODSTAWOWA FREKWENCJA
     # =====================================
     async def get_attendance(self):
+        """Pobiera podstawową frekwencję ucznia dla bieżącego okresu"""
         if self.current_account is None:
-            await self.get_accounts()
+            await self.get_accounts()  # Upewnia się, że mamy konto ucznia
 
         api = self._ensure_api()
         acc = self.current_account
 
-        return await api.get_attendance(
+        return await api.get_presence(
+            rest_url=acc.unit.rest_url,
+            pupil_id=acc.pupil.id,
+            period_id=acc.periods[-1].id,
+        )
+
+
+    # =====================================
+    # FREKWENCJA DODATKOWA (usprawiedliwienia, dodatkowe nieobecności)
+    # =====================================
+    async def get_presence_extra(self, date_from=None, date_to=None):
+        """Pobiera dodatkowe informacje o frekwencji ucznia w podanym przedziale dat"""
+        if self.current_account is None:
+            await self.get_accounts()
+
+        acc = self.current_account
+        api = self._ensure_api()
+
+        if date_from is None:
+            date_from = date.today()
+        if date_to is None:
+            date_to = date_from + timedelta(days=7)
+
+        return await api.get_presence_extra(
+            rest_url=acc.unit.rest_url,
+            pupil_id=acc.pupil.id,
+            date_from=date_from,
+            date_to=date_to,
+        )
+
+
+    # =====================================
+    # SZCZEGÓŁY FREKWENCJI DODATKOWEJ
+    # =====================================
+    async def get_presence_extra_info(self, weak_ref_id, type_):
+        """Pobiera szczegółowe informacje o wybranej pozycji frekwencji dodatkowej"""
+        if self.current_account is None:
+            await self.get_accounts()
+
+        acc = self.current_account
+        api = self._ensure_api()
+
+        return await api.get_presence_extra_info(
+            rest_url=acc.unit.rest_url,
+            pupil_id=acc.pupil.id,
+            weak_ref_id=weak_ref_id,
+            type_=type_,
+        )
+
+
+    # =====================================
+    # STATYSTYKI MIESIĘCZNE FREKWENCJI
+    # =====================================
+    async def get_presence_month_stats(self):
+        """Pobiera statystyki frekwencji ucznia podsumowane miesięcznie"""
+        if self.current_account is None:
+            await self.get_accounts()
+
+        acc = self.current_account
+        api = self._ensure_api()
+
+        return await api.get_presence_month_stats(
+            rest_url=acc.unit.rest_url,
+            pupil_id=acc.pupil.id,
+            period_id=acc.periods[-1].id,
+        )
+
+
+    # =====================================
+    # STATYSTYKI FREKWENCJI PER PRZEDMIOT
+    # =====================================
+    async def get_presence_subject_stats(self):
+        """Pobiera statystyki frekwencji ucznia dla poszczególnych przedmiotów"""
+        if self.current_account is None:
+            await self.get_accounts()
+
+        acc = self.current_account
+        api = self._ensure_api()
+
+        return await api.get_presence_subject_stats(
             rest_url=acc.unit.rest_url,
             pupil_id=acc.pupil.id,
             period_id=acc.periods[-1].id,
         )
 
     # =====================================
-    # PLAN LEKCJI
+    # PLAN LEKCJI (HARMONOGRAM)
     # =====================================
-    async def get_timetable(
-        self,
-        date_from: date | None = None,
-        date_to: date | None = None,
-    ):
+    async def get_schedule(self, date_from=None, date_to=None):
+        """Pobiera plan lekcji ucznia w wybranym przedziale dat"""
+        if self.current_account is None:
+            await self.get_accounts()
+
+        acc = self.current_account
+        api = self._ensure_api()
+
+        if date_from is None:
+            date_from = date.today()
+        if date_to is None:
+            date_to = date_from + timedelta(days=7)
+
+        return await api.get_schedule(
+            rest_url=acc.unit.rest_url,
+            pupil_id=acc.pupil.id,
+            date_from=date_from,
+            date_to=date_to,
+        )
+
+
+    # =====================================
+    # PLAN LEKCJI DODATKOWY / ZMIANY
+    # =====================================
+    async def get_schedule_extra(self, date_from=None, date_to=None):
+        """Pobiera zmiany w planie lekcji ucznia w wybranym przedziale dat"""
+        if self.current_account is None:
+            await self.get_accounts()
+
+        acc = self.current_account
+        api = self._ensure_api()
+
+        if date_from is None:
+            date_from = date.today()
+        if date_to is None:
+            date_to = date_from + timedelta(days=7)
+
+        return await api.get_schedule_extra(
+            rest_url=acc.unit.rest_url,
+            pupil_id=acc.pupil.id,
+            date_from=date_from,
+            date_to=date_to,
+        )
+    
+    # ==============================
+    # PLANOWANE LEKCJE
+    # ==============================
+    async def get_planned_lessons(self, date_from=None, date_to=None):
         if self.current_account is None:
             await self.get_accounts()
 
@@ -247,11 +404,10 @@ class IrisClient:
 
         if date_from is None:
             date_from = date.today()
-
         if date_to is None:
             date_to = date_from + timedelta(days=7)
 
-        return await api.get_schedule(
+        return await api.get_planned_lessons(
             rest_url=acc.unit.rest_url,
             pupil_id=acc.pupil.id,
             date_from=date_from,
@@ -287,4 +443,126 @@ class IrisClient:
         return await api.get_school_info(
             rest_url=acc.unit.rest_url,
             pupil_id=acc.pupil.id,
+        )
+    
+    # ==============================
+    # UWAGI / POCHWAŁY
+    # ==============================
+    async def get_notes(self):
+        if self.current_account is None:
+            await self.get_accounts()
+
+        api = self._ensure_api()
+        acc = self.current_account
+
+        return await api.get_notes(
+            rest_url=acc.unit.rest_url,
+            pupil_id=acc.pupil.id,
+        )
+
+    # =====================================
+    # PRZERWY W NAUCE / DNI WOLNE
+    # =====================================
+    async def get_vacations(self, date_from=None, date_to=None):
+        """Pobiera listę wakacji/przerw ucznia"""
+        if self.current_account is None:
+            await self.get_accounts()
+
+        acc = self.current_account
+        api = self._ensure_api()
+
+        return await api.get_vacations(
+            rest_url=acc.unit.rest_url,
+            pupil_id=acc.pupil.id,
+            date_from=date_from,
+            date_to=date_to,
+        )
+    
+    # =================================
+    # ZADANIA DOMOWE
+    # =================================
+    async def get_homework(self, date_from=None, date_to=None):
+        """Pobiera listę zadań domowych ucznia"""
+        if self.current_account is None:
+            await self.get_accounts()
+
+        acc = self.current_account
+        api = self._ensure_api()
+
+        return await api.get_homework(
+            rest_url=acc.unit.rest_url,
+            pupil_id=acc.pupil.id,
+            date_from=date_from,
+            date_to=date_to,
+        )
+    
+    # =================================
+    # ZEBRANIA
+    # =================================
+    async def get_meetings(self, date_from=None, date_to=None):
+        """Pobiera listę zebrań ucznia"""
+        if self.current_account is None:
+            await self.get_accounts()
+
+        acc = self.current_account
+        api = self._ensure_api()
+
+        return await api.get_meetings(
+            rest_url=acc.unit.rest_url,
+            pupil_id=acc.pupil.id,
+            date_from=date_from,
+            #date_to=date_to
+        )
+    
+    # =================================
+    # OGŁOSZENIA
+    # =================================
+    async def get_announcements(self):
+        """Pobiera listę ogłoszeń ucznia"""
+        if self.current_account is None:
+            await self.get_accounts()
+
+        acc = self.current_account
+        api = self._ensure_api()
+
+        return await api.get_announcements(
+            rest_url=acc.unit.rest_url,
+            pupil_id=acc.pupil.id,
+        )
+    
+    # =================================
+    # POSIŁKI (MEALS)
+    # =================================
+    async def get_meals(self, date_from=None, date_to=None, full=bool):
+        """Pobiera listę posiłków ucznia"""
+        if self.current_account is None:
+            await self.get_accounts()
+
+        acc = self.current_account
+        api = self._ensure_api()
+
+        return await api.get_meal_menu(
+            rest_url=acc.unit.rest_url,
+            pupil_id=acc.pupil.id,
+            date_from=date_from,
+            date_to=date_to,
+            full=full
+        )
+    
+    # /---- WIADMOŚCI ----/ #    
+    # ==============================
+    # OTRZYMANE WIADOMOŚCI
+    # ==============================
+    async def get_received_messages(self, box: str):
+        """Pobiera listę otrzymanych wiadomości ucznia"""
+        if self.current_account is None:
+            await self.get_accounts()
+
+        acc = self.current_account
+        api = self._ensure_api()
+
+        return await api.get_received_messages(
+            rest_url=acc.unit.rest_url,
+            pupil_id=acc.pupil.id,
+            box=box
         )

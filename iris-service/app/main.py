@@ -1,6 +1,7 @@
 import os
 import logging
 import traceback
+from datetime import date, timedelta
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from app.iris_client import IrisClient
@@ -76,14 +77,21 @@ async def app_error_handler(request: Request, exc: AppError):
     )
 
 # ==============================
-# HEALTHCHECK / READY
+# HEALTHCHECK + READY
 # ==============================
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    return {"code": "HEALTH_CHECK", "status": "ok"}
 
 @app.get("/ready")
-async def ready():
+async def ready(user_id: str):
+    try:
+        await client.load_user_credential(user_id)
+    except RuntimeError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Nie udało się załadować credentials dla {user_id}. Najpierw wywołaj /register"
+        )
     if app.state.registered_users:
         return {"status": "ready", "users": list(app.state.registered_users)}
     else:
@@ -94,7 +102,7 @@ async def ready():
 # ==============================
 @app.get("/")
 async def root():
-    return {"message": "Iris service running"}
+    return {"code": "API_INFO", "message": "Wulkaniczny Dzienniczek API - running"}
 
 # ==============================
 # REGISTER
@@ -195,7 +203,7 @@ async def get_accounts_raw(user_id: str):
     return accounts
 
 # ==============================
-# GRADES
+# OCENY
 # ==============================
 @app.get("/grades")
 async def get_grades(user_id: str):
@@ -213,7 +221,43 @@ async def get_grades(user_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 # ==============================
-# EXAMS
+# ŚREDNIA OCEN
+# =============================
+@app.get("/grades-averages")
+async def get_grades_averages(user_id: str):
+    try:
+        await client.load_user_credential(user_id)
+    except RuntimeError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Nie udało się załadować credentials dla {user_id}. Najpierw wywołaj /register"
+        )
+    try:
+        averages = await client.get_grades_averages()
+        return [a.model_dump() for a in averages]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+# =============================
+# OCENY ŚRÓDROCZNE I KOŃCOWOROCZNE
+# ===========================
+@app.get("/grades-summary")
+async def get_grades_summary(user_id: str):
+    try:
+        await client.load_user_credential(user_id)
+    except RuntimeError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Nie udało się załadować credentials dla {user_id}. Najpierw wywołaj /register"
+        )
+    try:
+        grades_summary = await client.get_grades_summary()
+        return [gs.model_dump() for gs in grades_summary]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) 
+
+# ==============================
+# SPRAWDZIANY
 # ==============================
 @app.get("/exams")
 async def get_exams(user_id: str):
@@ -232,7 +276,7 @@ async def get_exams(user_id: str):
 
 # ==============================
 # SZCZĘŚLIWY NUMEREK
-# =============================
+# ==============================
 @app.get("/lucky-number")
 async def lucky_number(user_id: str):
     try:
@@ -244,10 +288,11 @@ async def lucky_number(user_id: str):
         )
     try:
         lucky = await client.get_lucky_number()
-        return [g.model_dump() for g in lucky]
+        # Zwracamy pojedynczy obiekt jako słownik
+        return lucky.model_dump()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-    
+
 # ==============================
 # FREKWENCJA
 # =============================
@@ -266,6 +311,79 @@ async def get_attendance(user_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     
+# =====================================
+# FREKWENCJA DODATKOWA (usprawiedliwienia, dodatkowe nieobecności)
+# =====================================
+@app.get("/attendance/extra")
+async def get_attendance_extra_info(user_id: str):
+    try:
+        await client.load_user_credential(user_id)
+    except RuntimeError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Nie udało się załadować credentials dla {user_id}. Najpierw wywołaj /register"
+        )
+    try:
+        attendance_extra_info = await client.get_presence_extra()
+        return [a.model_dump() for a in attendance_extra_info]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+# =====================================
+# SZCZEGÓŁY FREKWENCJI DODATKOWEJ
+# =====================================
+@app.get("/attendance/extra-info/{info_id}")
+async def get_attendance_extra_info_details(user_id: str, info_id: int):
+    try:
+        await client.load_user_credential(user_id)
+    except RuntimeError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Nie udało się załadować credentials dla {user_id}. Najpierw wywołaj /register"
+        )
+    try:
+        details = await client.get_presence_extra_info(info_id)
+        return details.model_dump()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================
+# STATYSTYKI MIESIĘCZNE FREKWENCJI
+# =====================================
+@app.get("/attendance/month-stats")
+async def get_attendance_month_stats(user_id: str):
+    try:
+        await client.load_user_credential(user_id)
+    except RuntimeError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Nie udało się załadować credentials dla {user_id}. Najpierw wywołaj /register"
+        )
+    try:
+        stats = await client.get_presence_month_stats()
+        return [s.model_dump() for s in stats]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+# =====================================
+# STATYSTYKI FREKWENCJI PER PRZEDMIOT
+# =====================================
+@app.get("/attendance/subject-stats")
+async def get_attendance_subject_stats(user_id: str):
+    try:
+        await client.load_user_credential(user_id)
+    except RuntimeError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Nie udało się załadować credentials dla {user_id}. Najpierw wywołaj /register"
+        )
+    try:
+        stats = await client.get_presence_subject_stats()
+        return [s.model_dump() for s in stats]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
 # =============================
 # PLAN LEKCJI
 # ============================
@@ -279,8 +397,44 @@ async def get_timetable(user_id: str):
             detail=f"Nie udało się załadować credentials dla {user_id}. Najpierw wywołaj /register"
         )
     try:
-        timetable = await client.get_timetable()
+        timetable = await client.get_schedule()
         return [t.model_dump() for t in timetable]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# =============================
+# PLAN LEKCJI DODATKOWY / ZMIANY
+# ============================
+@app.get("/timetable/extra")
+async def get_timetable_extra(user_id: str):
+    try:
+        await client.load_user_credential(user_id)
+    except RuntimeError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Nie udało się załadować credentials dla {user_id}. Najpierw wywołaj /register"
+        )
+    try:
+        timetable_extra = await client.get_schedule_extra()
+        return [te.model_dump() for te in timetable_extra]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+# =============================
+# PLANOWANE LEKCJE
+# =============================
+@app.get("/planned-lessons")
+async def get_planned_lessons(user_id: str):
+    try:
+        await client.load_user_credential(user_id)
+    except RuntimeError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Nie udało się załadować credentials dla {user_id}. Najpierw wywołaj /register"
+        )
+    try:
+        timetable_planned = await client.get_planned_lessons()
+        return [tp.model_dump() for tp in timetable_planned]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     
@@ -321,5 +475,156 @@ async def get_school_info(user_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 # ==============================
-# UWAGI
+# UWAGI / POCHWAŁY
 # =============================
+@app.get("/notes")
+async def get_notes(user_id: str):
+    try:
+        await client.load_user_credential(user_id)
+    except RuntimeError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Nie udało się załadować credentials dla {user_id}. Najpierw wywołaj /register"
+        )
+    try:
+        notes = await client.get_notes()
+        return [n.model_dump() for n in notes]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+# =====================================
+# PRZERWY W NAUCE
+# =====================================
+@app.get("/vacations")
+async def get_vacations(user_id: str, date_from: date = None, date_to: date = None):
+    """Endpoint pobierający wakacje/przerwy ucznia w określonym przedziale dat"""
+    try:
+        await client.load_user_credential(user_id)
+    except RuntimeError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Nie udało się załadować credentials dla {user_id}. Najpierw wywołaj /register"
+        )
+    
+    # Ustawienie domyślnych dat, jeśli nie podano
+    if date_from is None:
+        date_from = date.today()
+    if date_to is None:
+        date_to = date_from + timedelta(days=365)  # np. rok do przodu
+
+    try:
+        vacations = await client.get_vacations(date_from=date_from, date_to=date_to)
+        return [v.model_dump() for v in vacations]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+# =====================================
+# ZADANIA DOMOWE
+# =====================================
+@app.get("/homework")
+async def get_homework(user_id: str):
+    try:
+        await client.load_user_credential(user_id)
+    except RuntimeError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Nie udało się załadować credentials dla {user_id}. Najpierw wywołaj /register"
+        )
+    try:
+        homework = await client.get_homework()
+        return [h.model_dump() for h in homework]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+# =====================================
+# ZEBRANIA
+# =====================================
+@app.get("/meetings")
+async def get_meetings(user_id: str, date_from: date = None, date_to: date = None):
+    try:
+        await client.load_user_credential(user_id)
+    except RuntimeError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Nie udało się załadować credentials dla {user_id}. Najpierw wywołaj /register"
+        )
+    
+    # Ustawienie domyślnych dat, jeśli nie podano
+    if date_from is None:
+        date_from = date.today()
+    if date_to is None:
+        date_to = date_from + timedelta(days=365)  # np. rok do przodu
+
+    try:
+        meetings = await client.get_meetings()
+        return [m.model_dump() for m in meetings]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+# =====================================
+# OGŁOSZENIA
+# =====================================
+@app.get("/announcements")
+async def get_announcements(user_id: str):
+    try:
+        await client.load_user_credential(user_id)
+    except RuntimeError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Nie udało się załadować credentials dla {user_id}. Najpierw wywołaj /register"
+        )
+    try:
+        announcements = await client.get_announcements()
+        return [a.model_dump() for a in announcements]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+# ==============================
+# POSIŁKI (MEALS)
+# =============================
+@app.get("/meals")
+async def get_meals(user_id: str, date_from: date = None, date_to: date = None, full: bool = False):
+    try:
+        await client.load_user_credential(user_id)
+    except RuntimeError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Nie udało się załadować credentials dla {user_id}. Najpierw wywołaj /register"
+        )
+    
+    # Ustawienie domyślnych dat, jeśli nie podano
+    if date_from is None:
+        date_from = date.today()
+    if date_to is None:
+        date_to = date_from + timedelta(days=365)  # np. rok do przodu
+
+    try:
+        meals = await client.get_meals(date_from=date_from, date_to=date_to, full=full)
+        if meals is None:
+            return []  # Zwracamy pustą listę, żeby nie wysypało się JSONem
+        return [m.model_dump() for m in meals]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# /---- WIADMOŚCI ----/ #    
+# ==============================
+# OTRZYMANE WIADOMOŚCI
+# =============================
+@app.get("/messages/received")
+async def get_received_messages(user_id: str, box: str = "INBOX"):
+    try:
+        await client.load_user_credential(user_id)
+    except RuntimeError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Nie udało się załadować credentials dla {user_id}. Najpierw wywołaj /register"
+        )
+    try:
+        messages = await client.get_received_messages(box=box)
+        return [m.model_dump() for m in messages] if messages else []
+    except Exception as e:
+        boxes = ["INBOX", "SENT", "ARCHIVE", "TRASH", "DRAFT"]
+        for box in boxes:
+            messages = await client.get_received_messages(box=box)
+            print(box, len(messages))
+        raise HTTPException(status_code=500, detail=str(e))
