@@ -1,6 +1,7 @@
 import os
 import logging
 import traceback
+from collections import defaultdict
 from datetime import date, timedelta
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -201,6 +202,107 @@ async def get_accounts_raw(user_id: str):
 
     accounts = await client.get_accounts_raw()
     return accounts
+
+# ==============================
+# Podsumowanie kont (ilosc uczniow)
+# ==============================
+
+LOGIN_ROLE_MAP = {
+    "Uczen": "Uczeń",
+    "Rodzic": "Rodzic",
+    "Opiekun": "Opiekun",
+    "Nauczyciel": "Nauczyciel",
+    "Dyrektor": "Dyrektor",
+}
+
+
+@app.get("/account/summary")
+async def account_summary(user_id: str):
+    """
+    Zwraca podsumowanie konta:
+    - liczba uczniów
+    - liczba szkół
+    - dane logującego
+    - szkoły z przypisanymi uczniami
+    """
+
+    # 1️⃣ Załaduj credentials
+    try:
+        await client.load_user_credential(user_id)
+    except RuntimeError:
+        raise HTTPException(
+            status_code=404,
+            detail="Nie znaleziono credentials. Najpierw wywołaj /register."
+        )
+
+    # 2️⃣ Pobierz konta (accounts)
+    try:
+        accounts = await client.get_accounts()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    schools_map = {}
+    students_ids = set()
+    login_info = None
+
+    # 3️⃣ Przetwarzanie kont
+    for acc in accounts:
+        pupil = acc.pupil
+        journal = getattr(acc, "journal", None)
+        unit = getattr(acc, "unit", None)
+        login = getattr(acc, "login", {}) or {}
+
+        # zapamiętujemy login (ten sam dla wszystkich)
+        if not login_info:
+            role_raw = login.get("LoginRole")
+            login_info = {
+                "login_id": login.get("Id"),
+                "email": login.get("Value"),
+                "first_name": login.get("FirstName"),
+                "second_name": login.get("SecondName"),
+                "surname": login.get("Surname"),
+                "display_name": login.get("DisplayName"),
+                "role": LOGIN_ROLE_MAP.get(role_raw, role_raw),
+            }
+
+        # klucz szkoły
+        school_key = getattr(unit, "id", None) or getattr(unit, "symbol", None)
+        if not school_key:
+            continue
+
+        if school_key not in schools_map:
+            schools_map[school_key] = {
+                "school_id": getattr(unit, "id", None),
+                "school_name": getattr(unit, "name", None),
+                "city": getattr(unit, "city", None)
+                        or extract_city_from_display_name(getattr(unit, "display_name", "")),
+                "symbol": getattr(unit, "symbol", None),
+                "students": []
+            }
+
+        # uczeń
+        pupil_id = getattr(pupil, "id", None)
+        students_ids.add(pupil_id)
+
+        role_raw = login.get("LoginRole")
+
+        schools_map[school_key]["students"].append({
+            "id": pupil_id,
+            "first_name": login.get("FirstName"),
+            "surname": login.get("Surname"),
+            "class": getattr(acc, "class_display", None),
+            "role": LOGIN_ROLE_MAP.get(role_raw, role_raw),
+        })
+
+    # 4️⃣ Finalny response
+    response = {
+        "students_count": len(students_ids),
+        "schools_count": len(schools_map),
+        "login": login_info,
+        "schools": list(schools_map.values())
+    }
+
+    return response
 
 # ==============================
 # OCENY
