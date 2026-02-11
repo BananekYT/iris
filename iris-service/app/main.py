@@ -3,10 +3,11 @@ import logging
 import traceback
 from collections import defaultdict
 from datetime import date, timedelta
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from app.iris_client import IrisClient
 from iris._exceptions import WrongTokenException
+from app.auth import create_access_token, get_current_user_optional
 from app.errors import *
 
 # ==============================
@@ -23,6 +24,20 @@ logger = logging.getLogger(__name__)
 app = FastAPI()
 client = IrisClient()
 app.state.registered_users = set()
+
+
+def resolve_request_user_id(
+    user_id: str | None = Query(default=None),
+    token_user_id: str | None = Depends(get_current_user_optional),
+) -> str:
+    if user_id:
+        return user_id
+    if token_user_id:
+        return token_user_id
+    raise HTTPException(
+        status_code=401,
+        detail="Brak user_id. Podaj user_id w query albo użyj Bearer token z /register.",
+    )
 
 # ==============================
 # SHUTDOWN
@@ -85,7 +100,7 @@ async def health():
     return {"code": "HEALTH_CHECK", "status": "ok"}
 
 @app.get("/ready")
-async def ready(user_id: str):
+async def ready(user_id: str = Depends(resolve_request_user_id)):
     try:
         await client.load_user_credential(user_id)
     except RuntimeError:
@@ -115,13 +130,14 @@ async def register_user(body: dict):
     tenant = body.get("tenant")
     user_id = body.get("user_id")
 
-    if not all([pin, token, tenant, user_id]):
-        raise HTTPException(status_code=400, detail="Brakuje pin/token/tenant/user_id")
+    if not all([pin, token, tenant]):
+        raise HTTPException(status_code=400, detail="Brakuje pin/token/tenant")
 
     try:
-        await client.register(pin, token, tenant, user_id)
-        app.state.registered_users.add(user_id)
-        return {"status": "registered", "user_id": user_id}
+        resolved_user_id = await client.register(pin, token, tenant, user_id)
+        app.state.registered_users.add(resolved_user_id)
+        access_token = create_access_token(resolved_user_id)
+        return {"status": "registered", "user_id": resolved_user_id, "access_token": access_token}
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -129,7 +145,7 @@ async def register_user(body: dict):
 # ACCOUNTS
 # ==============================
 @app.get("/accounts")
-async def get_accounts(user_id: str):
+async def get_accounts(user_id: str = Depends(resolve_request_user_id)):
     try:
         await client.load_user_credential(user_id)
     except RuntimeError:
@@ -191,7 +207,7 @@ def extract_city_from_display_name(display_name: str) -> str | None:
 
 
 @app.get("/accounts/raw")
-async def get_accounts_raw(user_id: str):
+async def get_accounts_raw(user_id: str = Depends(resolve_request_user_id)):
     try:
         await client.load_user_credential(user_id)
     except RuntimeError:
@@ -217,7 +233,7 @@ LOGIN_ROLE_MAP = {
 
 
 @app.get("/account/summary")
-async def account_summary(user_id: str):
+async def account_summary(user_id: str = Depends(resolve_request_user_id)):
     """
     Zwraca podsumowanie konta:
     - liczba uczniów
@@ -308,7 +324,7 @@ async def account_summary(user_id: str):
 # OCENY
 # ==============================
 @app.get("/grades")
-async def get_grades(user_id: str):
+async def get_grades(user_id: str = Depends(resolve_request_user_id)):
     try:
         await client.load_user_credential(user_id)
     except RuntimeError:
@@ -326,7 +342,7 @@ async def get_grades(user_id: str):
 # ŚREDNIA OCEN
 # =============================
 @app.get("/grades-averages")
-async def get_grades_averages(user_id: str):
+async def get_grades_averages(user_id: str = Depends(resolve_request_user_id)):
     try:
         await client.load_user_credential(user_id)
     except RuntimeError:
@@ -344,7 +360,7 @@ async def get_grades_averages(user_id: str):
 # OCENY ŚRÓDROCZNE I KOŃCOWOROCZNE
 # ===========================
 @app.get("/grades-summary")
-async def get_grades_summary(user_id: str):
+async def get_grades_summary(user_id: str = Depends(resolve_request_user_id)):
     try:
         await client.load_user_credential(user_id)
     except RuntimeError:
@@ -362,7 +378,7 @@ async def get_grades_summary(user_id: str):
 # SPRAWDZIANY
 # ==============================
 @app.get("/exams")
-async def get_exams(user_id: str):
+async def get_exams(user_id: str = Depends(resolve_request_user_id)):
     try:
         await client.load_user_credential(user_id)
     except RuntimeError:
@@ -380,7 +396,7 @@ async def get_exams(user_id: str):
 # SZCZĘŚLIWY NUMEREK
 # ==============================
 @app.get("/lucky-number")
-async def lucky_number(user_id: str):
+async def lucky_number(user_id: str = Depends(resolve_request_user_id)):
     try:
         await client.load_user_credential(user_id)
     except RuntimeError:
@@ -399,7 +415,7 @@ async def lucky_number(user_id: str):
 # FREKWENCJA
 # =============================
 @app.get("/attendance")
-async def get_attendance(user_id: str):
+async def get_attendance(user_id: str = Depends(resolve_request_user_id)):
     try:
         await client.load_user_credential(user_id)
     except RuntimeError:
@@ -417,7 +433,7 @@ async def get_attendance(user_id: str):
 # FREKWENCJA DODATKOWA (usprawiedliwienia, dodatkowe nieobecności)
 # =====================================
 @app.get("/attendance/extra")
-async def get_attendance_extra_info(user_id: str):
+async def get_attendance_extra_info(user_id: str = Depends(resolve_request_user_id)):
     try:
         await client.load_user_credential(user_id)
     except RuntimeError:
@@ -435,7 +451,7 @@ async def get_attendance_extra_info(user_id: str):
 # SZCZEGÓŁY FREKWENCJI DODATKOWEJ
 # =====================================
 @app.get("/attendance/extra-info/{info_id}")
-async def get_attendance_extra_info_details(user_id: str, info_id: int):
+async def get_attendance_extra_info_details(info_id: int, user_id: str = Depends(resolve_request_user_id)):
     try:
         await client.load_user_credential(user_id)
     except RuntimeError:
@@ -454,7 +470,7 @@ async def get_attendance_extra_info_details(user_id: str, info_id: int):
 # STATYSTYKI MIESIĘCZNE FREKWENCJI
 # =====================================
 @app.get("/attendance/month-stats")
-async def get_attendance_month_stats(user_id: str):
+async def get_attendance_month_stats(user_id: str = Depends(resolve_request_user_id)):
     try:
         await client.load_user_credential(user_id)
     except RuntimeError:
@@ -472,7 +488,7 @@ async def get_attendance_month_stats(user_id: str):
 # STATYSTYKI FREKWENCJI PER PRZEDMIOT
 # =====================================
 @app.get("/attendance/subject-stats")
-async def get_attendance_subject_stats(user_id: str):
+async def get_attendance_subject_stats(user_id: str = Depends(resolve_request_user_id)):
     try:
         await client.load_user_credential(user_id)
     except RuntimeError:
@@ -490,7 +506,7 @@ async def get_attendance_subject_stats(user_id: str):
 # PLAN LEKCJI
 # ============================
 @app.get("/timetable")
-async def get_timetable(user_id: str):
+async def get_timetable(user_id: str = Depends(resolve_request_user_id)):
     try:
         await client.load_user_credential(user_id)
     except RuntimeError:
@@ -508,7 +524,7 @@ async def get_timetable(user_id: str):
 # PLAN LEKCJI DODATKOWY / ZMIANY
 # ============================
 @app.get("/timetable/extra")
-async def get_timetable_extra(user_id: str):
+async def get_timetable_extra(user_id: str = Depends(resolve_request_user_id)):
     try:
         await client.load_user_credential(user_id)
     except RuntimeError:
@@ -526,7 +542,7 @@ async def get_timetable_extra(user_id: str):
 # PLANOWANE LEKCJE
 # =============================
 @app.get("/planned-lessons")
-async def get_planned_lessons(user_id: str):
+async def get_planned_lessons(user_id: str = Depends(resolve_request_user_id)):
     try:
         await client.load_user_credential(user_id)
     except RuntimeError:
@@ -544,7 +560,7 @@ async def get_planned_lessons(user_id: str):
 # NAUCZYCIELE
 # =============================
 @app.get("/teachers")
-async def get_teachers(user_id: str):
+async def get_teachers(user_id: str = Depends(resolve_request_user_id)):
     try:
         await client.load_user_credential(user_id)
     except RuntimeError:
@@ -562,7 +578,7 @@ async def get_teachers(user_id: str):
 # SZKOŁA - INFORMACJE
 # =============================
 @app.get("/school-info")
-async def get_school_info(user_id: str):
+async def get_school_info(user_id: str = Depends(resolve_request_user_id)):
     try:
         await client.load_user_credential(user_id)
     except RuntimeError:
@@ -580,7 +596,7 @@ async def get_school_info(user_id: str):
 # UWAGI / POCHWAŁY
 # =============================
 @app.get("/notes")
-async def get_notes(user_id: str):
+async def get_notes(user_id: str = Depends(resolve_request_user_id)):
     try:
         await client.load_user_credential(user_id)
     except RuntimeError:
@@ -598,7 +614,7 @@ async def get_notes(user_id: str):
 # PRZERWY W NAUCE
 # =====================================
 @app.get("/vacations")
-async def get_vacations(user_id: str, date_from: date = None, date_to: date = None):
+async def get_vacations(user_id: str = Depends(resolve_request_user_id), date_from: date = None, date_to: date = None):
     """Endpoint pobierający wakacje/przerwy ucznia w określonym przedziale dat"""
     try:
         await client.load_user_credential(user_id)
@@ -624,7 +640,7 @@ async def get_vacations(user_id: str, date_from: date = None, date_to: date = No
 # ZADANIA DOMOWE
 # =====================================
 @app.get("/homework")
-async def get_homework(user_id: str):
+async def get_homework(user_id: str = Depends(resolve_request_user_id)):
     try:
         await client.load_user_credential(user_id)
     except RuntimeError:
@@ -642,7 +658,7 @@ async def get_homework(user_id: str):
 # ZEBRANIA
 # =====================================
 @app.get("/meetings")
-async def get_meetings(user_id: str, date_from: date = None, date_to: date = None):
+async def get_meetings(user_id: str = Depends(resolve_request_user_id), date_from: date = None, date_to: date = None):
     try:
         await client.load_user_credential(user_id)
     except RuntimeError:
@@ -667,7 +683,7 @@ async def get_meetings(user_id: str, date_from: date = None, date_to: date = Non
 # OGŁOSZENIA
 # =====================================
 @app.get("/announcements")
-async def get_announcements(user_id: str):
+async def get_announcements(user_id: str = Depends(resolve_request_user_id)):
     try:
         await client.load_user_credential(user_id)
     except RuntimeError:
@@ -685,7 +701,7 @@ async def get_announcements(user_id: str):
 # POSIŁKI (MEALS)
 # =============================
 @app.get("/meals")
-async def get_meals(user_id: str, date_from: date = None, date_to: date = None, full: bool = False):
+async def get_meals(user_id: str = Depends(resolve_request_user_id), date_from: date = None, date_to: date = None, full: bool = False):
     try:
         await client.load_user_credential(user_id)
     except RuntimeError:
@@ -713,7 +729,7 @@ async def get_meals(user_id: str, date_from: date = None, date_to: date = None, 
 # OTRZYMANE WIADOMOŚCI
 # =============================
 @app.get("/messages/received")
-async def get_received_messages(user_id: str, box: str = "INBOX"):
+async def get_received_messages(user_id: str = Depends(resolve_request_user_id), box: str = "INBOX"):
     try:
         await client.load_user_credential(user_id)
     except RuntimeError:
