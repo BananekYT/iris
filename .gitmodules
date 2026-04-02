@@ -1,0 +1,3 @@
+[submodule "iris-service/iris"]
+	path = iris-service/iris
+	url = https://github.com/BananekYT/iris
