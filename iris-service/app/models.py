@@ -8,6 +8,8 @@ class RegisterRequest(BaseModel):
     pin: str = Field(..., min_length=1, examples=["1234"])
     token: str = Field(..., min_length=1, examples=["ABCDEF"])
     tenant: str = Field(..., min_length=1, examples=["warszawa"])
+    device_name: str = Field(default="Android", examples=["Android"])
+    device_model: str = Field(default="SM-A525F", examples=["SM-A525F"])
 
 
 class RefreshRequest(BaseModel):

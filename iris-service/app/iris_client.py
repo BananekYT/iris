@@ -1,3 +1,4 @@
+import platform
 from iris.credentials import RsaCredential
 from iris.api import IrisHebeApi
 from .secure_credential import save_credential, load_credential
@@ -20,9 +21,9 @@ CREDENTIALS_DIR.mkdir(exist_ok=True, parents=True)
 
 
 class IrisClient:
-    def __init__(self):
-        self.device_name = "Android"
-        self.device_model = "SM-A525F"
+    def __init__(self, device_name: str | None = None, device_model: str | None = None):
+        self.device_name = device_name or platform.system() or "Android"
+        self.device_model = device_model or platform.machine() or "SM-A525F"
 
         self.credential: RsaCredential | None = None
         self.api: IrisHebeApi | None = None
@@ -120,7 +121,13 @@ class IrisClient:
         pin: str,
         token: str,
         tenant: str,
+        device_name: str | None = None,
+        device_model: str | None = None,
     ) -> str:
+        # ustawiamy model urządzenia na wartość z requesta, jeśli jest dostępna
+        self.device_name = device_name or self.device_name
+        self.device_model = device_model or self.device_model
+
         # tworzymy NOWE credential tylko tutaj
         self.credential = RsaCredential.create_new(
             self.device_name,

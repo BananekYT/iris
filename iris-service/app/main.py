@@ -162,6 +162,33 @@ def _enforce_roles(claims: dict, allowed_roles: set[str]) -> None:
         )
 
 
+def _parse_average_value(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        normalized = value.strip().replace(",", ".")
+        if not normalized:
+            return None
+        try:
+            return float(normalized)
+        except ValueError:
+            return None
+    return None
+
+
+def _scope_kind(scope: str | None) -> str:
+    if not scope:
+        return "unknown"
+    lowered = str(scope).strip().lower()
+    if lowered in {"pupil", "student", "self", "uczen", "uczeń"}:
+        return "pupil"
+    if lowered in {"class", "clazz", "oddzial", "oddział", "klasa"}:
+        return "class"
+    return "unknown"
+
+
 @app.middleware("http")
 async def request_client_middleware(request: Request, call_next):
     request_client = IrisClient()
@@ -361,7 +388,13 @@ async def register_user(body: RegisterRequest, request: Request):
     enforce_register_rate_limit(request)
 
     try:
-        resolved_user_id = await client.register(body.pin, body.token, body.tenant)
+        resolved_user_id = await client.register(
+            body.pin,
+            body.token,
+            body.tenant,
+            device_name=body.device_name,
+            device_model=body.device_model,
+        )
         await load_user_context(resolved_user_id)
         role = await client.get_current_role()
         token_pair = create_token_pair(user_id=resolved_user_id, role=role)
@@ -658,7 +691,121 @@ async def get_grades_averages(user_id: str = Depends(resolve_request_user_id)):
         return [a.model_dump() for a in averages]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-    
+
+
+@app.get("/student-vs-class")
+async def get_student_vs_class(user_id: str = Depends(resolve_request_user_id)):
+    try:
+        await client.load_user_credential(user_id)
+    except RuntimeError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Nie udało się załadować credentials dla {user_id}. Najpierw wywołaj /register"
+        )
+
+    try:
+        accounts = await client.get_accounts()
+        averages = await client.get_grades_averages()
+
+        current = client.current_account or (accounts[0] if accounts else None)
+        class_display = getattr(current, "class_display", None)
+        pupil_id = getattr(getattr(current, "pupil", None), "id", None)
+
+        by_subject: dict[int, dict] = {}
+        for item in averages:
+            dumped = item.model_dump()
+            subject = dumped.get("subject") or {}
+            subject_id = subject.get("id")
+            if not subject_id:
+                continue
+
+            row = by_subject.setdefault(
+                subject_id,
+                {
+                    "subject_id": subject_id,
+                    "subject_name": subject.get("name"),
+                    "pupil_average": None,
+                    "class_average": None,
+                },
+            )
+
+            parsed_avg = _parse_average_value(dumped.get("average"))
+            kind = _scope_kind(dumped.get("scope"))
+
+            if kind == "pupil":
+                row["pupil_average"] = parsed_avg
+            elif kind == "class":
+                row["class_average"] = parsed_avg
+            elif row["pupil_average"] is None:
+                # fallback, gdy scope nie jest jednoznaczne
+                row["pupil_average"] = parsed_avg
+
+        subjects = []
+        above = below = equal = comparable = 0
+        pupil_values = []
+        class_values = []
+
+        for row in by_subject.values():
+            pa = row["pupil_average"]
+            ca = row["class_average"]
+            delta = None
+            standing = "unknown"
+
+            if pa is not None:
+                pupil_values.append(pa)
+            if ca is not None:
+                class_values.append(ca)
+
+            if pa is not None and ca is not None:
+                delta = round(pa - ca, 2)
+                comparable += 1
+                if delta > 0:
+                    standing = "above_class"
+                    above += 1
+                elif delta < 0:
+                    standing = "below_class"
+                    below += 1
+                else:
+                    standing = "equal_class"
+                    equal += 1
+
+            subjects.append(
+                {
+                    **row,
+                    "delta": delta,
+                    "standing": standing,
+                }
+            )
+
+        pupil_overall = round(sum(pupil_values) / len(pupil_values), 2) if pupil_values else None
+        class_overall = round(sum(class_values) / len(class_values), 2) if class_values else None
+        overall_delta = (
+            round(pupil_overall - class_overall, 2)
+            if pupil_overall is not None and class_overall is not None
+            else None
+        )
+
+        return {
+            "pupil_id": pupil_id,
+            "class_display": class_display,
+            "summary": {
+                "subjects_total": len(subjects),
+                "subjects_comparable": comparable,
+                "above_class": above,
+                "below_class": below,
+                "equal_class": equal,
+                "pupil_overall_average": pupil_overall,
+                "class_overall_average": class_overall,
+                "overall_delta": overall_delta,
+            },
+            "subjects": sorted(
+                subjects,
+                key=lambda x: (x.get("subject_name") or "").lower(),
+            ),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+     
 # =============================
 # OCENY ŚRÓDROCZNE I KOŃCOWOROCZNE
 # ===========================
