@@ -63,7 +63,14 @@ TOKEN_PREFIXES = {
 
 
 def get_base_url_by_token(token: str) -> str:
-    base_url = TOKEN_PREFIXES.get(token)
-    if not base_url:
-        raise WrongTokenException()
-    return base_url
+    normalized = token.upper()
+    base_url = TOKEN_PREFIXES.get(normalized)
+    if base_url:
+        return base_url
+
+    prefix = normalized[:3]
+    base_url = TOKEN_PREFIXES.get(prefix)
+    if base_url:
+        return base_url
+
+    raise WrongTokenException()

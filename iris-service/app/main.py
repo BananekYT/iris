@@ -370,7 +370,13 @@ async def register_user(body: RegisterRequest, request: Request):
             "user_id": resolved_user_id,
             **token_pair,
         }
-    except RuntimeError:
+    except RuntimeError as exc:
+        logger.exception(
+            "Register failed request_id=%s pin=%s tenant=%s",
+            getattr(request.state, "request_id", None),
+            body.pin,
+            body.tenant,
+        )
         raise HTTPException(
             status_code=400,
             detail="Rejestracja nie powiodła się. Sprawdź dane i spróbuj ponownie.",

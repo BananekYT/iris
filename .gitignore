@@ -6,3 +6,8 @@ iris-service/app/credential.json
 iris-service/credentials/
 SECURITY_AUDIT.md
 API_DOCUMENTATION.md
+iris-service/uvicorn.log
+iris-service/app/uvicorn.*.log
+iris-service/app/uvicorn*.log
+iris-service/app/uvicorn.*
+iris-service/app/logs/
