@@ -8,6 +8,7 @@ from .errors import CredentialNotFoundError
 import asyncio
 import aiohttp
 import inspect
+import uuid
 from pathlib import Path
 
 # ROOT_DIR = katalog nadrzędny dla katalogu "iris-services"
@@ -110,7 +111,13 @@ class IrisClient:
     # =====================================
     # REGISTER (JEDNORAZOWE)
     # =====================================
-    async def register(self, pin: str, token: str, tenant: str, user_id: str):
+    async def register(
+        self,
+        pin: str,
+        token: str,
+        tenant: str,
+        user_id: str | None = None,
+    ) -> str:
         # tworzymy NOWE credential tylko tutaj
         self.credential = RsaCredential.create_new(
             self.device_name,
@@ -125,17 +132,38 @@ class IrisClient:
                 tenant=tenant
             )
 
+            resolved_user_id = user_id or await self._resolve_user_id_after_register()
+
             serialized = (
                 self.credential.model_dump_json()
                 if hasattr(self.credential, "model_dump_json")
                 else self.credential.json()
             )
 
-            save_credential(user_id, serialized)
+            save_credential(resolved_user_id, serialized)
+            return resolved_user_id
 
         except (WrongTokenException, UsedTokenException) as e:
             await self._close_api_if_needed()
             raise RuntimeError(f"Rejestracja nie powiodła się: {e}") from e
+
+    async def _resolve_user_id_after_register(self) -> str:
+        """Próbuje zbudować stabilne user_id bez wymagania go od klienta."""
+        try:
+            accounts = await self.get_accounts()
+            if accounts:
+                login = getattr(accounts[0], "login", {}) or {}
+                login_id = login.get("Id")
+                email = login.get("Value")
+                if login_id:
+                    return str(login_id)
+                if email:
+                    return str(email).lower()
+        except Exception:
+            # Awaryjnie generujemy losowy identyfikator, żeby nie blokować rejestracji.
+            pass
+
+        return f"user-{uuid.uuid4()}"
 
     # =====================================
     # LOAD SAVED CREDENTIAL
