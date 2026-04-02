@@ -27,6 +27,10 @@ class IrisClient:
         self.credential: RsaCredential | None = None
         self.api: IrisHebeApi | None = None
         self.current_account = None
+        self.preferred_pupil_id: int | None = None
+
+    def set_preferred_pupil_id(self, pupil_id: int | None) -> None:
+        self.preferred_pupil_id = pupil_id
 
     # =====================================
     # API INIT
@@ -116,7 +120,6 @@ class IrisClient:
         pin: str,
         token: str,
         tenant: str,
-        user_id: str | None = None,
     ) -> str:
         # tworzymy NOWE credential tylko tutaj
         self.credential = RsaCredential.create_new(
@@ -132,7 +135,7 @@ class IrisClient:
                 tenant=tenant
             )
 
-            resolved_user_id = user_id or await self._resolve_user_id_after_register()
+            resolved_user_id = await self._resolve_user_id_after_register()
 
             serialized = (
                 self.credential.model_dump_json()
@@ -177,6 +180,8 @@ class IrisClient:
         self.credential = RsaCredential.model_validate_json(serialized)
         self.api = IrisHebeApi(self.credential)
         self.current_account = None  # reset kontekstu konta
+        if self.preferred_pupil_id is not None:
+            await self.select_current_account(self.preferred_pupil_id)
 
     # =====================================
     # ACCOUNTS
@@ -187,6 +192,44 @@ class IrisClient:
         if accounts and self.current_account is None:
             self.current_account = accounts[0]
         return accounts
+
+    async def select_current_account(self, pupil_id: int) -> bool:
+        accounts = await self.get_accounts()
+        for account in accounts:
+            pupil = getattr(account, "pupil", None)
+            if getattr(pupil, "id", None) == pupil_id:
+                self.current_account = account
+                return True
+        return False
+
+    async def get_current_role(self) -> str:
+        accounts = await self.get_accounts()
+        if not accounts:
+            return "Uczen"
+        login = getattr(accounts[0], "login", {}) or {}
+        return str(login.get("LoginRole") or "Uczen")
+
+    async def get_profile(self) -> dict:
+        accounts = await self.get_accounts()
+        if not accounts:
+            return {}
+
+        current = self.current_account or accounts[0]
+        login = getattr(current, "login", {}) or {}
+        pupil = getattr(current, "pupil", None)
+        unit = getattr(current, "unit", None)
+
+        return {
+            "user_id": str(login.get("Id") or login.get("Value") or ""),
+            "role": str(login.get("LoginRole") or "Uczen"),
+            "display_name": login.get("DisplayName"),
+            "email": login.get("Value"),
+            "first_name": login.get("FirstName"),
+            "surname": login.get("Surname"),
+            "active_pupil_id": getattr(pupil, "id", None),
+            "unit_name": getattr(unit, "name", None),
+            "unit_symbol": getattr(unit, "symbol", None),
+        }
 
     async def get_accounts_raw(self):
         accounts = await self.get_accounts()

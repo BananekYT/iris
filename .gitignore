@@ -4,3 +4,5 @@ app/credential.json
 credentials/
 iris-service/app/credential.json
 iris-service/credentials/
+SECURITY_AUDIT.md
+API_DOCUMENTATION.md

@@ -1,14 +1,36 @@
 import os
 import logging
-import traceback
-from collections import defaultdict
-from datetime import date, timedelta
+from collections import defaultdict, deque
+from contextvars import ContextVar
+from datetime import date, datetime, timedelta, timezone
+from typing import Any
+from time import monotonic
+from uuid import uuid4
+
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+
 from app.iris_client import IrisClient
-from iris._exceptions import WrongTokenException
-from app.auth import create_access_token, get_current_user_optional
+from app.auth import (
+    create_token_pair,
+    get_current_claims,
+    get_current_user,
+    revoke_access_token,
+    revoke_all_refresh_tokens_for_user,
+    revoke_refresh_token,
+    refresh_token_pair,
+    try_get_subject_from_auth_header,
+)
 from app.errors import *
+from app.models import (
+    LogoutRequest,
+    RefreshRequest,
+    RegisterRequest,
+    SelectAccountRequest,
+    SessionStatusResponse,
+    TokenPairResponse,
+)
 
 # ==============================
 # LOGOWANIE
@@ -22,61 +44,248 @@ logger = logging.getLogger(__name__)
 # APLIKACJA I KLIENT
 # ==============================
 app = FastAPI()
-client = IrisClient()
-app.state.registered_users = set()
+_request_client: ContextVar[IrisClient | None] = ContextVar("request_client", default=None)
+app.state.selected_account_by_user: dict[str, int] = {}
+
+REGISTER_RATE_LIMIT = 5
+REGISTER_WINDOW_SECONDS = 60
+_register_attempts: dict[str, deque[float]] = defaultdict(deque)
+
+GLOBAL_RATE_LIMIT = int(os.getenv("GLOBAL_RATE_LIMIT", "120"))
+GLOBAL_RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("GLOBAL_RATE_LIMIT_WINDOW_SECONDS", "60"))
+_global_attempts: dict[str, deque[float]] = defaultdict(deque)
+
+ENABLE_UNVERSIONED_API = os.getenv("ENABLE_UNVERSIONED_API", "true").lower() == "true"
+UNVERSIONED_SUNSET_DATE = os.getenv("UNVERSIONED_SUNSET_DATE", "2026-12-31")
+ENV = os.getenv("ENV", "development").lower()
+
+cors_origins_raw = os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
+CORS_ALLOWED_ORIGINS = [o.strip() for o in cors_origins_raw.split(",") if o.strip()]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Request-Id"],
+    expose_headers=["X-Request-Id", "Deprecation", "Sunset", "Link"],
+)
+
+
+class RequestScopedIrisClient:
+    def _get_client(self) -> IrisClient:
+        request_client = _request_client.get()
+        if request_client is None:
+            raise RuntimeError("Brak kontekstu klienta dla bieżącego żądania")
+        return request_client
+
+    def __getattr__(self, name: str):
+        return getattr(self._get_client(), name)
+
+
+client = RequestScopedIrisClient()
 
 
 def resolve_request_user_id(
-    user_id: str | None = Query(default=None),
-    token_user_id: str | None = Depends(get_current_user_optional),
+    token_user_id: str = Depends(get_current_user),
 ) -> str:
-    if user_id:
-        return user_id
-    if token_user_id:
-        return token_user_id
-    raise HTTPException(
-        status_code=401,
-        detail="Brak user_id. Podaj user_id w query albo użyj Bearer token z /register.",
-    )
+    return token_user_id
 
-# ==============================
-# SHUTDOWN
-# ==============================
-@app.on_event("shutdown")
-async def shutdown_event():
+
+def _error_payload(code: str, message: str, details: dict | None = None) -> dict:
+    return {"error": {"code": code, "message": message, "details": details}}
+
+
+def _paginate(items: list[Any], limit: int, offset: int) -> dict:
+    total = len(items)
+    safe_offset = max(offset, 0)
+    safe_limit = min(max(limit, 1), 200)
+    sliced = items[safe_offset:safe_offset + safe_limit]
+    return {
+        "items": sliced,
+        "pagination": {
+            "total": total,
+            "offset": safe_offset,
+            "limit": safe_limit,
+        },
+    }
+
+
+def _sort_items(items: list[dict], sort: str) -> list[dict]:
+    reverse = sort.lower() == "desc"
+
+    def _sort_key(item: dict):
+        ts = _extract_item_timestamp(item)
+        if ts is not None:
+            return ts
+        return datetime.min.replace(tzinfo=timezone.utc)
+
+    return sorted(items, key=_sort_key, reverse=reverse)
+
+
+def _parse_datetime(value: str) -> datetime | None:
     try:
-        await client.close()
-        logger.info("Shutdown: iris client closed")
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
     except Exception:
-        logger.exception("Failed to close client")
-        traceback.print_exc()
+        return None
 
-# ===========================
-# EVENT STARTUP
-# ===========================
-"""
-@app.on_event("startup")
-async def startup_event():
-    # Tutaj kod, który ma się wykonać przy starcie serwera
-    print("Serwer startuje...")
-    # np. załaduj zapisane credentiale
-    from pathlib import Path
-    credentials_dir = Path(__file__).resolve().parents[2] / "credentials"
-    credentials_dir.mkdir(exist_ok=True)
 
-    if credentials_dir.exists():
-        for file in credentials_dir.glob("*.json"):
-            user_id = file.stem
-            try:
-                await client.load_user_credential(user_id)
-                app.state.registered_users.add(user_id)
-                print(f"Załadowano credentials dla {user_id}")
-            except RuntimeError as e:
-                print(f"Nie udało się załadować credentials dla {user_id}: {e}")
-            except Exception as e:
-                print(f"Wystąpił błąd podczas ładowania credentials dla {user_id}: {e}")
+def _extract_item_timestamp(item: dict) -> datetime | None:
+    for key, value in item.items():
+        if isinstance(value, str) and ("date" in key.lower() or "time" in key.lower()):
+            parsed = _parse_datetime(value)
+            if parsed is not None:
+                return parsed
+    return None
 
-"""
+
+def _filter_delta(items: list[dict], updated_since: datetime) -> list[dict]:
+    result: list[dict] = []
+    if updated_since.tzinfo is None:
+        updated_since = updated_since.replace(tzinfo=timezone.utc)
+    for item in items:
+        ts = _extract_item_timestamp(item)
+        if ts is not None and ts >= updated_since:
+            result.append(item)
+    return result
+
+
+def _enforce_roles(claims: dict, allowed_roles: set[str]) -> None:
+    role = str(claims.get("role", "Uczen"))
+    if role not in allowed_roles:
+        raise HTTPException(
+            status_code=403,
+            detail="Brak uprawnień do tego zasobu",
+        )
+
+
+@app.middleware("http")
+async def request_client_middleware(request: Request, call_next):
+    request_client = IrisClient()
+    token_user = try_get_subject_from_auth_header(request.headers.get("authorization"))
+    if token_user:
+        preferred = app.state.selected_account_by_user.get(token_user)
+        request_client.set_preferred_pupil_id(preferred)
+    token = _request_client.set(request_client)
+    try:
+        return await call_next(request)
+    finally:
+        try:
+            await request_client.close()
+        except Exception:
+            logger.exception("Failed to close request iris client")
+        _request_client.reset(token)
+
+
+@app.middleware("http")
+async def versioning_and_security_middleware(request: Request, call_next):
+    original_path = request.scope.get("path", "")
+    if original_path.startswith("/v1"):
+        request.scope["path"] = original_path[3:] or "/"
+
+    request_id = request.headers.get("X-Request-Id") or str(uuid4())
+    request.state.request_id = request_id
+    request.state.started_at = monotonic()
+
+    # Globalny rate limit (poza endpointami technicznymi).
+    skip_rate_limit_paths = {"/health", "/ready"}
+    effective_path = request.scope.get("path", original_path)
+    if effective_path not in skip_rate_limit_paths:
+        ip = request.client.host if request.client else "unknown"
+        now = monotonic()
+        key = f"{ip}:{effective_path}"
+        attempts = _global_attempts[key]
+        while attempts and now - attempts[0] > GLOBAL_RATE_LIMIT_WINDOW_SECONDS:
+            attempts.popleft()
+        if len(attempts) >= GLOBAL_RATE_LIMIT:
+            return JSONResponse(
+                status_code=429,
+                content=_error_payload(
+                    code="RATE_LIMIT_EXCEEDED",
+                    message="Zbyt wiele żądań. Spróbuj ponownie za chwilę.",
+                    details={"request_id": request_id},
+                ),
+                headers={"X-Request-Id": request_id},
+            )
+        attempts.append(now)
+
+    response = await call_next(request)
+
+    response.headers["X-Request-Id"] = request_id
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    if ENV == "production":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+
+    if not original_path.startswith("/v1"):
+        response.headers["Deprecation"] = "true"
+        response.headers["Sunset"] = UNVERSIONED_SUNSET_DATE
+        response.headers["Link"] = f"</v1{original_path}>; rel=\"successor-version\""
+        if not ENABLE_UNVERSIONED_API and original_path not in {"/health", "/ready"}:
+            return JSONResponse(
+                status_code=410,
+                content=_error_payload(
+                    code="UNVERSIONED_API_DEPRECATED",
+                    message="Użyj wersjonowanego endpointu /v1",
+                    details={"request_id": request_id},
+                ),
+                headers={"X-Request-Id": request_id},
+            )
+
+    duration_ms = round((monotonic() - request.state.started_at) * 1000, 2)
+    auth_header = request.headers.get("authorization")
+    token_user = try_get_subject_from_auth_header(auth_header)
+    client_ip = request.client.host if request.client else "unknown"
+    logger.info(
+        "audit request_id=%s ip=%s method=%s path=%s status=%s user_id=%s duration_ms=%s",
+        request_id,
+        client_ip,
+        request.method,
+        original_path,
+        response.status_code,
+        token_user or "-",
+        duration_ms,
+    )
+    return response
+
+
+def enforce_register_rate_limit(request: Request) -> None:
+    ip = request.client.host if request.client else "unknown"
+    now = monotonic()
+    attempts = _register_attempts[ip]
+
+    while attempts and now - attempts[0] > REGISTER_WINDOW_SECONDS:
+        attempts.popleft()
+
+    if len(attempts) >= REGISTER_RATE_LIMIT:
+        raise HTTPException(
+            status_code=429,
+            detail="Zbyt wiele prób rejestracji. Spróbuj ponownie za chwilę.",
+        )
+
+    attempts.append(now)
+
+
+async def load_user_context(user_id: str) -> None:
+    try:
+        await client.load_user_credential(user_id)
+    except RuntimeError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Nie udało się załadować credentials dla {user_id}. Najpierw wywołaj /register",
+        )
+
+    selected_pupil_id = app.state.selected_account_by_user.get(user_id)
+    if selected_pupil_id is not None:
+        selected = await client.select_current_account(selected_pupil_id)
+        if not selected:
+            app.state.selected_account_by_user.pop(user_id, None)
+
 # =============================
 # OBSŁUGA WŁASNYCH BŁĘDÓW
 # =============================
@@ -84,12 +293,46 @@ async def startup_event():
 async def app_error_handler(request: Request, exc: AppError):
     return JSONResponse(
         status_code=exc.status_code,
-        content={
-            "error": {
-                "code": exc.code,
-                "message": exc.message
-            }
-        }
+        content=_error_payload(
+            code=exc.code,
+            message=exc.message,
+            details={"request_id": getattr(request.state, "request_id", None)},
+        ),
+    )
+
+
+@app.exception_handler(HTTPException)
+async def http_error_handler(request: Request, exc: HTTPException):
+    if exc.status_code >= 500:
+        logger.error("HTTP 500 response detail hidden from client: %s", exc.detail)
+        return JSONResponse(
+            status_code=500,
+            content=_error_payload(
+                code="INTERNAL_SERVER_ERROR",
+                message="Wewnętrzny błąd serwera",
+                details={"request_id": getattr(request.state, "request_id", None)},
+            ),
+        )
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=_error_payload(
+            code=f"HTTP_{exc.status_code}",
+            message=str(exc.detail),
+            details={"request_id": getattr(request.state, "request_id", None)},
+        ),
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_error_handler(request: Request, exc: Exception):
+    logger.exception("Unhandled server exception")
+    return JSONResponse(
+        status_code=500,
+        content=_error_payload(
+            code="UNHANDLED_EXCEPTION",
+            message="Wewnętrzny błąd serwera",
+            details={"request_id": getattr(request.state, "request_id", None)},
+        ),
     )
 
 # ==============================
@@ -100,18 +343,8 @@ async def health():
     return {"code": "HEALTH_CHECK", "status": "ok"}
 
 @app.get("/ready")
-async def ready(user_id: str = Depends(resolve_request_user_id)):
-    try:
-        await client.load_user_credential(user_id)
-    except RuntimeError:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Nie udało się załadować credentials dla {user_id}. Najpierw wywołaj /register"
-        )
-    if app.state.registered_users:
-        return {"status": "ready", "users": list(app.state.registered_users)}
-    else:
-        raise HTTPException(status_code=503, detail="Brak załadowanych credentiali")
+async def ready():
+    return {"status": "ready"}
 
 # ==============================
 # ROOT
@@ -124,22 +357,85 @@ async def root():
 # REGISTER
 # ==============================
 @app.post("/register")
-async def register_user(body: dict):
-    pin = body.get("pin")
-    token = body.get("token")
-    tenant = body.get("tenant")
-    user_id = body.get("user_id")
-
-    if not all([pin, token, tenant]):
-        raise HTTPException(status_code=400, detail="Brakuje pin/token/tenant")
+async def register_user(body: RegisterRequest, request: Request):
+    enforce_register_rate_limit(request)
 
     try:
-        resolved_user_id = await client.register(pin, token, tenant, user_id)
-        app.state.registered_users.add(resolved_user_id)
-        access_token = create_access_token(resolved_user_id)
-        return {"status": "registered", "user_id": resolved_user_id, "access_token": access_token}
-    except RuntimeError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        resolved_user_id = await client.register(body.pin, body.token, body.tenant)
+        await load_user_context(resolved_user_id)
+        role = await client.get_current_role()
+        token_pair = create_token_pair(user_id=resolved_user_id, role=role)
+        return {
+            "status": "registered",
+            "user_id": resolved_user_id,
+            **token_pair,
+        }
+    except RuntimeError:
+        raise HTTPException(
+            status_code=400,
+            detail="Rejestracja nie powiodła się. Sprawdź dane i spróbuj ponownie.",
+        )
+
+
+@app.post("/auth/refresh", response_model=TokenPairResponse)
+async def auth_refresh(body: RefreshRequest):
+    return refresh_token_pair(body.refresh_token)
+
+
+@app.post("/auth/logout")
+async def auth_logout(
+    body: LogoutRequest,
+    claims: dict = Depends(get_current_claims),
+):
+    revoke_access_token(str(claims.get("jti")))
+    if body.refresh_token:
+        revoke_refresh_token(body.refresh_token)
+    if body.all_sessions:
+        revoke_all_refresh_tokens_for_user(str(claims["sub"]))
+    return {"status": "logged_out"}
+
+
+@app.get("/auth/session", response_model=SessionStatusResponse)
+async def auth_session_status(claims: dict = Depends(get_current_claims)):
+    exp_ts = int(claims["exp"])
+    iat_ts = int(claims["iat"])
+    return {
+        "user_id": str(claims["sub"]),
+        "role": str(claims.get("role", "Uczen")),
+        "token_expires_at": datetime.fromtimestamp(exp_ts, tz=timezone.utc),
+        "issued_at": datetime.fromtimestamp(iat_ts, tz=timezone.utc),
+        "jti": str(claims["jti"]),
+    }
+
+
+@app.get("/me")
+async def me(
+    user_id: str = Depends(resolve_request_user_id),
+):
+    await load_user_context(user_id)
+    return await client.get_profile()
+
+
+@app.post("/accounts/select")
+async def select_active_account(
+    body: SelectAccountRequest,
+    user_id: str = Depends(resolve_request_user_id),
+):
+    await load_user_context(user_id)
+    selected = await client.select_current_account(body.pupil_id)
+    if not selected:
+        raise HTTPException(status_code=404, detail="Nie znaleziono konta o podanym pupil_id")
+    app.state.selected_account_by_user[user_id] = body.pupil_id
+    return {"status": "ok", "active_pupil_id": body.pupil_id}
+
+
+@app.get("/glossary")
+async def glossary():
+    return {
+        "roles": ["Uczen", "Rodzic", "Opiekun", "Nauczyciel", "Dyrektor"],
+        "message_boxes": ["INBOX", "SENT", "ARCHIVE", "TRASH", "DRAFT"],
+        "token_types": ["access", "refresh"],
+    }
 
 # ==============================
 # ACCOUNTS
@@ -207,14 +503,15 @@ def extract_city_from_display_name(display_name: str) -> str | None:
 
 
 @app.get("/accounts/raw")
-async def get_accounts_raw(user_id: str = Depends(resolve_request_user_id)):
-    try:
-        await client.load_user_credential(user_id)
-    except RuntimeError:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Nie udało się załadować credentials dla {user_id}. Najpierw wywołaj /register"
-        )
+async def get_accounts_raw(
+    user_id: str = Depends(resolve_request_user_id),
+    claims: dict = Depends(get_current_claims),
+):
+    if ENV == "production":
+        raise HTTPException(status_code=404, detail="Endpoint niedostępny")
+
+    _enforce_roles(claims, {"Rodzic", "Opiekun", "Nauczyciel", "Dyrektor"})
+    await load_user_context(user_id)
 
     accounts = await client.get_accounts_raw()
     return accounts
@@ -596,7 +893,12 @@ async def get_school_info(user_id: str = Depends(resolve_request_user_id)):
 # UWAGI / POCHWAŁY
 # =============================
 @app.get("/notes")
-async def get_notes(user_id: str = Depends(resolve_request_user_id)):
+async def get_notes(
+    user_id: str = Depends(resolve_request_user_id),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    sort: str = Query(default="desc", pattern="^(asc|desc)$"),
+):
     try:
         await client.load_user_credential(user_id)
     except RuntimeError:
@@ -606,7 +908,29 @@ async def get_notes(user_id: str = Depends(resolve_request_user_id)):
         )
     try:
         notes = await client.get_notes()
-        return [n.model_dump() for n in notes]
+        dumped = [n.model_dump() for n in notes]
+        sorted_items = _sort_items(dumped, sort)
+        return _paginate(sorted_items, limit=limit, offset=offset)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/notes/delta")
+async def get_notes_delta(
+    updated_since: datetime,
+    user_id: str = Depends(resolve_request_user_id),
+):
+    try:
+        await client.load_user_credential(user_id)
+    except RuntimeError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Nie udało się załadować credentials dla {user_id}. Najpierw wywołaj /register"
+        )
+    try:
+        notes = await client.get_notes()
+        dumped = [n.model_dump() for n in notes]
+        return _filter_delta(dumped, updated_since)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     
@@ -683,7 +1007,12 @@ async def get_meetings(user_id: str = Depends(resolve_request_user_id), date_fro
 # OGŁOSZENIA
 # =====================================
 @app.get("/announcements")
-async def get_announcements(user_id: str = Depends(resolve_request_user_id)):
+async def get_announcements(
+    user_id: str = Depends(resolve_request_user_id),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    sort: str = Query(default="desc", pattern="^(asc|desc)$"),
+):
     try:
         await client.load_user_credential(user_id)
     except RuntimeError:
@@ -693,7 +1022,29 @@ async def get_announcements(user_id: str = Depends(resolve_request_user_id)):
         )
     try:
         announcements = await client.get_announcements()
-        return [a.model_dump() for a in announcements]
+        dumped = [a.model_dump() for a in announcements]
+        sorted_items = _sort_items(dumped, sort)
+        return _paginate(sorted_items, limit=limit, offset=offset)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/announcements/delta")
+async def get_announcements_delta(
+    updated_since: datetime,
+    user_id: str = Depends(resolve_request_user_id),
+):
+    try:
+        await client.load_user_credential(user_id)
+    except RuntimeError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Nie udało się załadować credentials dla {user_id}. Najpierw wywołaj /register"
+        )
+    try:
+        announcements = await client.get_announcements()
+        dumped = [a.model_dump() for a in announcements]
+        return _filter_delta(dumped, updated_since)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     
@@ -729,7 +1080,13 @@ async def get_meals(user_id: str = Depends(resolve_request_user_id), date_from: 
 # OTRZYMANE WIADOMOŚCI
 # =============================
 @app.get("/messages/received")
-async def get_received_messages(user_id: str = Depends(resolve_request_user_id), box: str = "INBOX"):
+async def get_received_messages(
+    user_id: str = Depends(resolve_request_user_id),
+    box: str = "INBOX",
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    sort: str = Query(default="desc", pattern="^(asc|desc)$"),
+):
     try:
         await client.load_user_credential(user_id)
     except RuntimeError:
@@ -739,10 +1096,29 @@ async def get_received_messages(user_id: str = Depends(resolve_request_user_id),
         )
     try:
         messages = await client.get_received_messages(box=box)
-        return [m.model_dump() for m in messages] if messages else []
+        dumped = [m.model_dump() for m in messages] if messages else []
+        sorted_items = _sort_items(dumped, sort)
+        return _paginate(sorted_items, limit=limit, offset=offset)
     except Exception as e:
-        boxes = ["INBOX", "SENT", "ARCHIVE", "TRASH", "DRAFT"]
-        for box in boxes:
-            messages = await client.get_received_messages(box=box)
-            print(box, len(messages))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/messages/received/delta")
+async def get_received_messages_delta(
+    updated_since: datetime,
+    user_id: str = Depends(resolve_request_user_id),
+    box: str = "INBOX",
+):
+    try:
+        await client.load_user_credential(user_id)
+    except RuntimeError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Nie udało się załadować credentials dla {user_id}. Najpierw wywołaj /register"
+        )
+    try:
+        messages = await client.get_received_messages(box=box)
+        dumped = [m.model_dump() for m in messages] if messages else []
+        return _filter_delta(dumped, updated_since)
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
